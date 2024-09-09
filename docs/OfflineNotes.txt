@@ -1,0 +1,28 @@
+INSTALLER
+Edit the installer to change to /DevModManager if not already in
+Check condition to make folder structure
+Make sure preservation logic works for localappdata
+make sure upgrade preserves path and doesn't append
+
+
+
+GENERAL
+Check race condition making blank db file
+Sync mod dev folder so we can test
+Only back up modified?
+Recheck and test all logic for deploymod, undeploymod, promote
+
+
+LOM
+Separate out as standalone app as well as integrated
+
+rebuild lom to use database
+Organize into folders? LOM / Plugin
+
+Get answer on Starfield.ccc
+
+Folder/Plugin up/down logic -- see if +1/-1 sufficient or need to actually swap ordinal values
+check rewriting ordinals based on displayed order
+
+Change so row format changes if category or plugin
+
