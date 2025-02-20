@@ -2,7 +2,7 @@
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 # Configuration File Path
-$configPath = "$PSScriptRoot\config.ini"
+$configPath = "$PSScriptRoot\xbox_archive_from_windows_config.ini"
 
 # Load Config if it exists
 $config = @{}
