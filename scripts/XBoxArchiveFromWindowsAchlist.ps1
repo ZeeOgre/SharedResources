@@ -117,23 +117,37 @@ XBoxDataPath=$($xboxDataBox.Text)
     $jsonData = Get-Content $inputFile | ConvertFrom-Json
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($inputFile)
     
-    $achlistFile = "$dataFolder\$baseName`_xbox.achlist"
-    $textureFile = "$dataFolder\$baseName`_xboxtextures.txt"
-    
+    $achlistFile = "$dataFolder\$baseName`_xboxMain.txt"
+    $textureFile = "$dataFolder\$baseName`_xboxTextures.txt"
+    $soundFile = "$dataFolder\$baseName`_xboxSounds.txt"
     $achlistContent = @()
     $textureContent = @()
     
     foreach ($item in $jsonData) {
         $item = $item -replace '/', '\'  # Ensure all paths use backslashes
-
+    
         if ($item -match '^Data\\Sound.*\.wem$') {
-            $achlistContent += $item -replace '^Data\\Sound', "$xboxDataPath\Data\Sound"
+            $soundContent += ($item -replace '^Data\\Sound', "$xboxDataPath\Data\Sound") + "`r`n"
         } elseif ($item -match '^DATA\\Textures') {
             $textureContent += ($item -replace '^DATA\\Textures', "$xboxDataPath\Data\Textures") -replace '"', ''
         } else {
             $achlistContent += $item -replace '^Data', "$dataFolder"
         }
     }
+    if ($soundContent) {
+        # Trim only trailing whitespace and newline characters
+        $soundContent = $soundContent.TrimEnd("`r", "`n")
+    
+        # Write to file as ASCII using Set-Content (while ensuring no extra newline)
+        $soundContent -split "`r`n" | Set-Content -Path $soundFile -Encoding ASCII
+    } else {
+        Write-Host "Warning: No valid sound entries found. File will not be created."
+    }
+    
+    # Keep these lines unchanged to maintain consistency
+    $achlistContent | Set-Content -Path $achlistFile -Encoding ASCII
+    $textureContent | Set-Content -Path $textureFile -Encoding ASCII
+    
     
     $achlistContent | Set-Content -Path $achlistFile -Encoding ASCII
     $textureContent | Set-Content -Path $textureFile -Encoding ASCII
@@ -141,14 +155,29 @@ XBoxDataPath=$($xboxDataBox.Text)
     
     $mainba2File = "$dataFolder\$baseName - Main_xbox.ba2"
     $textureba2File = "$dataFolder\$baseName - Textures_xbox.ba2"
+    $voicesba2File = "$dataFolder\$baseName - Sound_xbox.ba2"
 
     $textureCommand = "& '$archiverPath' -create='$textureba2File' -sourceFile='$textureFile' -format=XBoxDDS -compression=XBox"
-    $mainCommand = "& '$archiverPath' -create='$mainba2File' -sourceFile='$achlistFile' -format=General -compression=XBox"
+    $mainCommand = "& '$archiverPath' -create='$mainba2File' -sourceFile='$achlistFile' -format=General -compression=Default"
+    $soundCommand = "& '$archiverPath' -create='$voicesba2File' -sourceFile='$soundFile' -format=General -compression=None"  # No compression
+    
+    Invoke-Expression $mainCommand
+    Write-Host $mainCommand
+    
+    Invoke-Expression $soundCommand
+    Write-Host $soundCommand
+
+    Invoke-Expression $textureCommand
+    Write-Host $textureCommand
     
     Invoke-Expression $mainCommand
     Invoke-Expression $textureCommand
+    Invoke-Expression "& '$archiverPath'  '$mainba2File' -format=General -compression=None"
+
+    &explorer.exe "$xboxDataPath\Data\Sound\Voice"
     
-    [System.Windows.Forms.MessageBox]::Show("Processing Complete!", "Success", "OK", "Information")
+
+    #[System.Windows.Forms.MessageBox]::Show("Processing Complete!", "Success", "OK", "Information")
 })
 $form.Controls.Add($processButton)
 
