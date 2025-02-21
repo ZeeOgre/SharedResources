@@ -12,7 +12,7 @@ if (Test-Path $configPath) {
 
 # Create Form
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "File Transformer"
+$form.Text = "Load XBox Archives from Windows Achlist"
 $form.Size = New-Object System.Drawing.Size(600, 400)
 $form.StartPosition = "CenterScreen"
 $form.AllowDrop = $true
@@ -126,7 +126,7 @@ XBoxDataPath=$($xboxDataBox.Text)
     foreach ($item in $jsonData) {
         $item = $item -replace '/', '\'  # Ensure all paths use backslashes
 
-        if ($item -match '^Data\\Sound') {
+        if ($item -match '^Data\\Sound.*\.wem$') {
             $achlistContent += $item -replace '^Data\\Sound', "$xboxDataPath\Data\Sound"
         } elseif ($item -match '^DATA\\Textures') {
             $textureContent += ($item -replace '^DATA\\Textures', "$xboxDataPath\Data\Textures") -replace '"', ''
