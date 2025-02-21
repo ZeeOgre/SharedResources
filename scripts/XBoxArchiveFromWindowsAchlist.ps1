@@ -2,17 +2,17 @@
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 # Configuration File Path
-$configPath = "$PSScriptRoot\xbox_archive_from_windows_config.ini"
+$configPath = "$PSScriptRoot\XBoxArchivesFromAchlist.ini"
 
 # Load Config if it exists
 $config = @{}
 if (Test-Path $configPath) {
-    $config = Get-Content $configPath | ConvertFrom-StringData
+    $config = Get-Content $configPath | ForEach-Object { $_ -replace '\\', '\\' } | ConvertFrom-StringData
 }
 
 # Create Form
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "XBox Archives from Windows Achlist"
+$form.Text = "File Transformer"
 $form.Size = New-Object System.Drawing.Size(600, 400)
 $form.StartPosition = "CenterScreen"
 $form.AllowDrop = $true
@@ -32,7 +32,7 @@ $form.Controls.Add($inputBox)
 
 # Archiver Path
 $archiverLabel = New-Object System.Windows.Forms.Label
-$archiverLabel.Text = "Archive2.exe Path:"
+$archiverLabel.Text = "Archiver2.exe Path:"
 $archiverLabel.Location = New-Object System.Drawing.Point(10, 40)
 $archiverLabel.AutoSize = $true
 $form.Controls.Add($archiverLabel)
@@ -96,6 +96,14 @@ $processButton = New-Object System.Windows.Forms.Button
 $processButton.Text = "Process"
 $processButton.Location = New-Object System.Drawing.Point(250, 140)
 $processButton.Add_Click({
+    # Save configuration for reuse
+    $configData = @"
+InputFile=$($inputBox.Text)
+ArchiverPath=$($archiverBox.Text)
+DataFolder=$($dataFolderBox.Text)
+XBoxDataPath=$($xboxDataBox.Text)
+"@
+    $configData | Set-Content $configPath
     $inputFile = $inputBox.Text
     $archiverPath = $archiverBox.Text
     $dataFolder = $dataFolderBox.Text
@@ -116,24 +124,28 @@ $processButton.Add_Click({
     $textureContent = @()
     
     foreach ($item in $jsonData) {
+        $item = $item -replace '/', '\'  # Ensure all paths use backslashes
+
         if ($item -match '^Data\\Sound') {
             $achlistContent += $item -replace '^Data\\Sound', "$xboxDataPath\Data\Sound"
         } elseif ($item -match '^DATA\\Textures') {
-            $textureContent += $item -replace '^DATA\\Textures', "$xboxDataPath\Data\Textures" -replace '"', ''
+            $textureContent += ($item -replace '^DATA\\Textures', "$xboxDataPath\Data\Textures") -replace '"', ''
         } else {
-            $achlistContent += $item
+            $achlistContent += $item -replace '^Data', "$dataFolder"
         }
     }
     
-    $achlistContent | Set-Content $achlistFile
-    $textureContent | Set-Content $textureFile
+    $achlistContent | Set-Content -Path $achlistFile -Encoding ASCII
+    $textureContent | Set-Content -Path $textureFile -Encoding ASCII
     
-    $achlistBa2File = "$dataFolder\$baseName - Main_xbox.ba2"
-    $achlistCommand = "& '$archiverPath' -c='$achlistBa2File' -s='$achlistFile' -format=General -compression=Xbox"
-    Invoke-Expression $achlistCommand
+    
+    $mainba2File = "$dataFolder\$baseName - Main_xbox.ba2"
+    $textureba2File = "$dataFolder\$baseName - Textures_xbox.ba2"
 
-    $textureBa2File = "$dataFolder\$baseName - Textures_xbox.ba2"
-    $textureCommand = "& '$archiverPath' -c='$textureBa2File' -s='$textureFile' -format=XBoxDDS -compression=XBox"
+    $textureCommand = "& '$archiverPath' -create='$textureba2File' -sourceFile='$textureFile' -format=XBoxDDS -compression=XBox"
+    $mainCommand = "& '$archiverPath' -create='$mainba2File' -sourceFile='$achlistFile' -format=General -compression=XBox"
+    
+    Invoke-Expression $mainCommand
     Invoke-Expression $textureCommand
     
     [System.Windows.Forms.MessageBox]::Show("Processing Complete!", "Success", "OK", "Information")
