@@ -172,9 +172,10 @@ XBoxDataPath=$($xboxDataBox.Text)
     
     Invoke-Expression $mainCommand
     Invoke-Expression $textureCommand
+    &explorer.exe "$xboxDataPath\Data\Sound\Voice"
     Invoke-Expression "& '$archiverPath'  '$mainba2File' -format=General -compression=None"
 
-    &explorer.exe "$xboxDataPath\Data\Sound\Voice"
+    
     
 
     #[System.Windows.Forms.MessageBox]::Show("Processing Complete!", "Success", "OK", "Information")
