@@ -119,84 +119,39 @@ XBoxDataPath=$($xboxDataBox.Text)
     
     $achlistFile = "$dataFolder\$baseName`_xboxMain.txt"
     $textureFile = "$dataFolder\$baseName`_xboxTextures.txt"
-    $soundFile = "$dataFolder\$baseName`_xboxSounds.txt"
     $achlistContent = @()
     $textureContent = @()
+    $hasWemFiles = $false
     
     foreach ($item in $jsonData) {
-        $item = $item -replace '/', '\'  # Ensure all paths use backslashes
-    
-        if ($item -match '^Data\\Sound.*\.wem$') {
-            $soundContent += ($item -replace '^Data\\Sound', "$xboxDataPath\Data\Sound") + "`r`n"
-        } elseif ($item -match '^DATA\\Textures') {
-            $textureContent += ($item -replace '^DATA\\Textures', "$xboxDataPath\Data\Textures") -replace '"', ''
+        $item = $item -replace '/', '\\'  # Ensure all paths use backslashes
+        if ($item -match '^DATA\\Textures') {
+            $textureContent += $item -replace '^DATA\\Textures', "$xboxDataPath\\Data\\Textures"
+        } elseif ($item -match '^DATA\\Sound.*\.wem$') {
+            $achlistContent += $item -replace '^DATA\\Sound', "$xboxDataPath\\Data\\Sound"
+            $hasWemFiles = $true
         } else {
             $achlistContent += $item -replace '^Data', "$dataFolder"
         }
     }
-    if ($soundContent) {
-        # Trim only trailing whitespace and newline characters
-        $soundContent = $soundContent.TrimEnd("`r", "`n")
-    
-        # Write to file as ASCII using Set-Content (while ensuring no extra newline)
-        $soundContent -split "`r`n" | Set-Content -Path $soundFile -Encoding ASCII
-    } else {
-        Write-Host "Warning: No valid sound entries found. File will not be created."
-    }
-    
-    # Keep these lines unchanged to maintain consistency
-    $achlistContent | Set-Content -Path $achlistFile -Encoding ASCII
-    $textureContent | Set-Content -Path $textureFile -Encoding ASCII
-    
     
     $achlistContent | Set-Content -Path $achlistFile -Encoding ASCII
     $textureContent | Set-Content -Path $textureFile -Encoding ASCII
-    
     
     $mainba2File = "$dataFolder\$baseName - Main_xbox.ba2"
     $textureba2File = "$dataFolder\$baseName - Textures_xbox.ba2"
-    $voicesba2File = "$dataFolder\$baseName - Sound_xbox.ba2"
-
+    
+    $compressionType = if ($hasWemFiles) { "None" } else { "Default" }
+    $mainCommand = "& '$archiverPath' -create='$mainba2File' -sourceFile='$achlistFile' -format=General -compression=$compressionType"
     $textureCommand = "& '$archiverPath' -create='$textureba2File' -sourceFile='$textureFile' -format=XBoxDDS -compression=XBox"
-    $mainCommand = "& '$archiverPath' -create='$mainba2File' -sourceFile='$achlistFile' -format=General -compression=Default"
-    $soundCommand = "& '$archiverPath' -create='$voicesba2File' -sourceFile='$soundFile' -format=General -compression=None"  # No compression
     
     Invoke-Expression $mainCommand
     Write-Host $mainCommand
     
-    Invoke-Expression $soundCommand
-    Write-Host $soundCommand
-
     Invoke-Expression $textureCommand
     Write-Host $textureCommand
-    
-    Invoke-Expression $mainCommand
-    Invoke-Expression $textureCommand
-    &explorer.exe "$xboxDataPath\Data\Sound\Voice"
-    Invoke-Expression "& '$archiverPath'  '$mainba2File' -format=General -compression=None"
-
-    
-    
-
-    #[System.Windows.Forms.MessageBox]::Show("Processing Complete!", "Success", "OK", "Information")
 })
 $form.Controls.Add($processButton)
-
-# Drag and Drop Functionality
-$form.Add_DragEnter({
-    param($sender, $e)
-    if ($e.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) {
-        $e.Effect = [System.Windows.Forms.DragDropEffects]::Copy
-    }
-})
-
-$form.Add_DragDrop({
-    param($sender, $e)
-    $files = $e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop, $true)
-    if ($files.Count -gt 0) {
-        $inputBox.Text = $files[0]
-    }
-})
 
 # Show Form
 $form.ShowDialog()
