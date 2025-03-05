@@ -150,6 +150,8 @@ XBoxDataPath=$($xboxDataBox.Text)
     
     Invoke-Expression $textureCommand
     Write-Host $textureCommand
+    #exit on completion (usually only takes a second or two)
+    [System.Windows.Forms.Application]::Exit()
 })
 $form.Controls.Add($processButton)
 
