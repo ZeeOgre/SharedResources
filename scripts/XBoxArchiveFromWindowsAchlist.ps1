@@ -3,6 +3,7 @@
 
 # Configuration File Path
 $configPath = "$PSScriptRoot\XBoxArchivesFromAchlist.ini"
+Set-Location $PSScriptRoot
 
 # Load Config if it exists
 $config = @{}
@@ -91,10 +92,31 @@ $xboxDataButton.Add_Click({
 })
 $form.Controls.Add($xboxDataButton)
 
+# Panel for checkboxes
+$checkboxPanel = New-Object System.Windows.Forms.Panel
+$checkboxPanel.Location = New-Object System.Drawing.Point(120, 140)
+$checkboxPanel.Size = New-Object System.Drawing.Size(300, 30)
+$form.Controls.Add($checkboxPanel)
+
+# Checkboxes for Archive Selection
+$xboxArchiveCheckbox = New-Object System.Windows.Forms.CheckBox
+$xboxArchiveCheckbox.Text = "XBox Archive"
+$xboxArchiveCheckbox.Location = New-Object System.Drawing.Point(10, 10)
+$xboxArchiveCheckbox.Checked = if ($config.ContainsKey('XboxArchive')) { [bool]$config.XboxArchive } else { $true }
+$checkboxPanel.Controls.Add($xboxArchiveCheckbox)
+
+$windowsArchiveCheckbox = New-Object System.Windows.Forms.CheckBox
+$windowsArchiveCheckbox.Text = "Windows Archive"
+$windowsArchiveCheckbox.Location = New-Object System.Drawing.Point(120, 10)
+$windowsArchiveCheckbox.Checked = if ($config.ContainsKey('WindowsArchive')) { [bool]$config.WindowsArchive } else { $true }
+$checkboxPanel.Controls.Add($windowsArchiveCheckbox)
+
 # Process Button
 $processButton = New-Object System.Windows.Forms.Button
 $processButton.Text = "Process"
-$processButton.Location = New-Object System.Drawing.Point(250, 140)
+$processButton.Location = New-Object System.Drawing.Point(250, 180)
+$form.Controls.Add($processButton)
+
 $processButton.Add_Click({
     # Save configuration for reuse
     $configData = @"
@@ -102,6 +124,8 @@ InputFile=$($inputBox.Text)
 ArchiverPath=$($archiverBox.Text)
 DataFolder=$($dataFolderBox.Text)
 XBoxDataPath=$($xboxDataBox.Text)
+XboxArchive=$($xboxArchiveCheckbox.Checked)
+WindowsArchive=$($windowsArchiveCheckbox.Checked)
 "@
     $configData | Set-Content $configPath
     $inputFile = $inputBox.Text
@@ -109,7 +133,24 @@ XBoxDataPath=$($xboxDataBox.Text)
     $dataFolder = $dataFolderBox.Text
     $xboxDataPath = $xboxDataBox.Text
     
-    if (!(Test-Path $inputFile)) {
+    # Preserve logic from existing script, ensuring archive checkboxes apply
+
+    # Ensure inputFile is properly assigned before use
+    Write-Host "Input File Path: $inputFile" # Debugging output to confirm file path
+    $inputFile = $inputBox.Text
+    $archiverPath = $archiverBox.Text
+
+    if ([string]::IsNullOrWhiteSpace($inputFile) -or !(Test-Path $inputFile)) {
+        [System.Windows.Forms.MessageBox]::Show("Input file not found.", "Error", "OK", "Error")
+        return
+    }
+    
+    if ([string]::IsNullOrWhiteSpace($archiverPath) -or !(Test-Path $archiverPath)) {
+        [System.Windows.Forms.MessageBox]::Show("Archiver path is invalid or not set.", "Error", "OK", "Error")
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($inputFile) -or !(Test-Path $inputFile)) {
         [System.Windows.Forms.MessageBox]::Show("Input file not found.", "Error", "OK", "Error")
         return
     }
@@ -117,43 +158,57 @@ XBoxDataPath=$($xboxDataBox.Text)
     $jsonData = Get-Content $inputFile | ConvertFrom-Json
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($inputFile)
     
-    $achlistFile = "$dataFolder\$baseName`_xboxMain.txt"
-    $textureFile = "$dataFolder\$baseName`_xboxTextures.txt"
-    $achlistContent = @()
-    $textureContent = @()
-    $hasWemFiles = $false
+    $xboxMainFile = "$dataFolder\$baseName`_xboxMain.txt"
+    $xboxTextureFile = "$dataFolder\$baseName`_xboxTextures.txt"
+    $windowsMainFile = "$dataFolder\$baseName`_windowsMain.txt"
+    $windowsTextureFile = "$dataFolder\$baseName`_windowsTextures.txt"
     
+    $xboxMainContent = @()
+    $xboxTextureContent = @()
+    $windowsMainContent = @()
+    $windowsTextureContent = @()
+    
+    $hasWemFiles = $false
+
     foreach ($item in $jsonData) {
         $item = $item -replace '/', '\\'  # Ensure all paths use backslashes
         if ($item -match '^DATA\\Textures') {
-            $textureContent += $item -replace '^DATA\\Textures', "$xboxDataPath\\Data\\Textures"
+            $xboxTextureContent += $item -replace '^DATA\\Textures', "$xboxDataPath\\Data\\Textures"
+            $windowsTextureContent += $item
         } elseif ($item -match '^DATA\\Sound.*\.wem$') {
-            $achlistContent += $item -replace '^DATA\\Sound', "$xboxDataPath\\Data\\Sound"
+            $xboxMainContent += $item -replace '^DATA\\Sound', "$xboxDataPath\\Data\\Sound"
+            $windowsMainContent += $item
             $hasWemFiles = $true
         } else {
-            $achlistContent += $item -replace '^Data', "$dataFolder"
+            $xboxMainContent += $item -replace '^Data', "$dataFolder"
+            $windowsMainContent += $item
         }
     }
+
+
+
+    $xboxMainContent | Set-Content -Path $xboxMainFile -Encoding ASCII
+    $xboxTextureContent | Set-Content -Path $xboxTextureFile -Encoding ASCII
+    $windowsMainContent | Set-Content -Path $windowsMainFile -Encoding ASCII
+    $windowsTextureContent | Set-Content -Path $windowsTextureFile -Encoding ASCII
     
-    $achlistContent | Set-Content -Path $achlistFile -Encoding ASCII
-    $textureContent | Set-Content -Path $textureFile -Encoding ASCII
-    
-    $mainba2File = "$dataFolder\$baseName - Main_xbox.ba2"
-    $textureba2File = "$dataFolder\$baseName - Textures_xbox.ba2"
-    
+    Write-Host "Windows and Xbox archive lists written successfully."
+
     $compressionType = if ($hasWemFiles) { "None" } else { "Default" }
-    $mainCommand = "& '$archiverPath' -create='$mainba2File' -sourceFile='$achlistFile' -format=General -compression=$compressionType"
-    $textureCommand = "& '$archiverPath' -create='$textureba2File' -sourceFile='$textureFile' -format=XBoxDDS -compression=XBox"
     
-    Invoke-Expression $mainCommand
-    Write-Host $mainCommand
+    if ($xboxArchiveCheckbox.Checked) {
+        Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Main_xbox.ba2' -sourceFile='$dataFolder\$baseName`_xboxMain.txt' -format=General -compression=$compressionType"
+        Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Textures_xbox.ba2' -sourceFile='$dataFolder\$baseName`_xboxTextures.txt' -format=XBoxDDS -compression=XBox"
+    }
     
-    Invoke-Expression $textureCommand
-    Write-Host $textureCommand
-    #exit on completion (usually only takes a second or two)
+    if ($windowsArchiveCheckbox.Checked) {
+        Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Main.ba2' -sourceFile='$dataFolder\$baseName`_windowsMain.txt' -format=General -compression=Default"
+        Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Textures.ba2' -sourceFile='$dataFolder\$baseName`_windowsTextures.txt' -format=DDS -compression=Default"
+    }
+    
+    Write-Host "Processing completed for both Xbox and Windows archives."
     [System.Windows.Forms.Application]::Exit()
 })
-$form.Controls.Add($processButton)
 
 # Show Form
 $form.ShowDialog()
