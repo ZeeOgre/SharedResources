@@ -164,47 +164,57 @@ WindowsArchive=$($windowsArchiveCheckbox.Checked)
     $windowsTextureFile = "$dataFolder\$baseName`_windowsTextures.txt"
     
     $xboxMainContent = @()
-    $xboxTextureContent = @()
-    $windowsMainContent = @()
-    $windowsTextureContent = @()
-    
-    $hasWemFiles = $false
+$xboxTextureContent = @()
+$windowsMainContent = @()
+$windowsTextureContent = @()
 
-    foreach ($item in $jsonData) {
-        $item = $item -replace '/', '\\'  # Ensure all paths use backslashes
-        if ($item -match '^DATA\\Textures') {
-            $xboxTextureContent += $item -replace '^DATA\\Textures', "$xboxDataPath\\Data\\Textures"
-            $windowsTextureContent += $item
-        } elseif ($item -match '^DATA\\Sound.*\.wem$') {
-            $xboxMainContent += $item -replace '^DATA\\Sound', "$xboxDataPath\\Data\\Sound"
-            $windowsMainContent += $item
-            $hasWemFiles = $true
-        } else {
-            $xboxMainContent += $item -replace '^Data', "$dataFolder"
-            $windowsMainContent += $item
-        }
+$hasWemFiles = $false
+$hasTextureFiles = $false
+
+foreach ($item in $jsonData) {
+    $item = $item -replace '/', '\\'  # Ensure all paths use backslashes
+    if ($item -match '^DATA\\Textures') {
+        $xboxTextureContent += $item -replace '^DATA\\Textures', "$xboxDataPath\\Data\\Textures"
+        $windowsTextureContent += $item
+        $hasTextureFiles = $true
+    } elseif ($item -match '^DATA\\Sound.*\.wem$') {
+        $xboxMainContent += $item -replace '^DATA\\Sound', "$xboxDataPath\\Data\\Sound"
+        $windowsMainContent += $item
+        $hasWemFiles = $true
+    } else {
+        $xboxMainContent += $item -replace '^Data', "$dataFolder"
+        $windowsMainContent += $item
     }
-
-
+}
 
     $xboxMainContent | Set-Content -Path $xboxMainFile -Encoding ASCII
-    $xboxTextureContent | Set-Content -Path $xboxTextureFile -Encoding ASCII
     $windowsMainContent | Set-Content -Path $windowsMainFile -Encoding ASCII
-    $windowsTextureContent | Set-Content -Path $windowsTextureFile -Encoding ASCII
-    
-    Write-Host "Windows and Xbox archive lists written successfully."
 
-    $compressionType = if ($hasWemFiles) { "None" } else { "Default" }
-    
-    if ($xboxArchiveCheckbox.Checked) {
-        Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Main_xbox.ba2' -sourceFile='$dataFolder\$baseName`_xboxMain.txt' -format=General -compression=$compressionType"
+if ($hasTextureFiles) {
+    $xboxTextureContent | Set-Content -Path $xboxTextureFile -Encoding ASCII
+    $windowsTextureContent | Set-Content -Path $windowsTextureFile -Encoding ASCII
+}
+
+Write-Host "Windows and Xbox archive lists written successfully."
+
+$compressionType = if ($hasWemFiles) { "None" } else { "Default" }
+
+if ($xboxArchiveCheckbox.Checked) {
+    Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Main_xbox.ba2' -sourceFile='$dataFolder\$baseName`_xboxMain.txt' -format=General -compression=$compressionType"
+
+    if ($hasTextureFiles) {
         Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Textures_xbox.ba2' -sourceFile='$dataFolder\$baseName`_xboxTextures.txt' -format=XBoxDDS -compression=XBox"
     }
-    
-    if ($windowsArchiveCheckbox.Checked) {
-        Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Main.ba2' -sourceFile='$dataFolder\$baseName`_windowsMain.txt' -format=General -compression=Default"
+}
+
+if ($windowsArchiveCheckbox.Checked) {
+    Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Main.ba2' -sourceFile='$dataFolder\$baseName`_windowsMain.txt' -format=General -compression=Default"
+
+    if ($hasTextureFiles) {
         Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Textures.ba2' -sourceFile='$dataFolder\$baseName`_windowsTextures.txt' -format=DDS -compression=Default"
     }
+}
+
     
     Write-Host "Processing completed for both Xbox and Windows archives."
     [System.Windows.Forms.Application]::Exit()
