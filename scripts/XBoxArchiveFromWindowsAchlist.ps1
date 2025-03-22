@@ -208,7 +208,7 @@ if ($xboxArchiveCheckbox.Checked) {
 }
 
 if ($windowsArchiveCheckbox.Checked) {
-    Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Main.ba2' -sourceFile='$dataFolder\$baseName`_windowsMain.txt' -format=General -compression=Default"
+    Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Main.ba2' -sourceFile='$dataFolder\$baseName`_windowsMain.txt' -format=General -compression=$compressionType"
 
     if ($hasTextureFiles) {
         Invoke-Expression "& '$archiverPath' -create='$dataFolder\$baseName - Textures.ba2' -sourceFile='$dataFolder\$baseName`_windowsTextures.txt' -format=DDS -compression=Default"
