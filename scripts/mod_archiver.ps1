@@ -179,7 +179,130 @@ $runButton = New-Object System.Windows.Forms.Button
 $runButton.Text = "Run"
 $runButton.Location = New-Object System.Drawing.Point(250, 540)
 $form.Controls.Add($runButton)
+# ...existing code...
 
+# Make AF Version Button
+$afButton = New-Object System.Windows.Forms.Button
+$afButton.Text = "Make AF Version"
+$afButton.Location = New-Object System.Drawing.Point(350, 540)
+$afButton.Enabled = $false  # Initially disabled
+$form.Controls.Add($afButton)
+
+$afButton.Add_Click({
+    $modName = [System.IO.Path]::GetFileNameWithoutExtension($inputBox.Text)
+    $basePath = Split-Path $inputBox.Text
+    $afModName = "${modName}_AF"
+    $achlistPath = Join-Path $basePath "$modName.achlist"
+    $afAchlistPath = Join-Path $basePath "$afModName.achlist"
+
+    # Step 1: Copy files to <modname>_AF.*
+    $filesToCopy = @("$modName.esm", "$modName.esp", "$modName.achlist")
+    foreach ($file in $filesToCopy) {
+        $src = Join-Path $basePath $file
+        $dst = Join-Path $basePath ($file -replace "^$modName", $afModName)
+        if (Test-Path $src) {
+            Copy-Item -Path $src -Destination $dst -Force
+            $logBox.AppendText("COPY: $src => $dst`r`n")
+        }
+    }
+
+    # Step 2: Modify <modname>_AF.achlist
+    if (Test-Path $afAchlistPath) {
+        (Get-Content $afAchlistPath) -replace "$modName\.esm", "${modName}_AF.esm" | Set-Content -Path $afAchlistPath
+        $logBox.AppendText("MODIFY: Updated $afAchlistPath`r`n")
+    }
+
+# Step 3: Identify directories for junction points
+$junctionTargets = @{}
+if (Test-Path $achlistPath) {
+    $achlistContent = Get-Content $achlistPath | ConvertFrom-Json
+    foreach ($entry in $achlistContent) {
+        $entry = $entry -replace '/', '\\'
+        if ($entry -match "^Data\\") {
+            # Truncate only the first "\Data\Data" to "\Data"
+            $rootPath = $dataBox.Text -replace '(?i)\\Data\\Data$', '\\Data'
+            $xboxRootPath = $xboxBox.Text -replace '(?i)\\Data\\Data$', '\\Data'
+
+            # Construct the full path for the base game
+            $fullPath = Join-Path $rootPath $entry.Substring(5) # Remove the first "Data\" prefix
+            $parentDir = Split-Path $fullPath -Parent
+            $junctionTargets[$parentDir] = $true
+
+            # Log the resolved path for debugging
+            $logBox.AppendText("RESOLVED [Base Path]: $fullPath`r`n")
+        }
+    }
+}
+
+# Step 4: Create junction points
+foreach ($target in $junctionTargets.Keys) {
+    # Log the candidate paths for debugging
+    $logBox.AppendText("CANDIDATE: $target`r`n")
+
+    # Match only folders named <modname>.esm (case-insensitive)
+    if ($target -match "\\${modName}\.esm$") {
+        # Preserve the full relative path for the junction name
+        $relativePath = $target -replace [regex]::Escape($rootPath), ''
+        $junctionName = Join-Path $rootPath $relativePath
+
+        # Replace only <modname>.esm with <modname>_AF.esm
+        $junctionName = $junctionName -replace "\\${modName}\.esm$", "\\${modName}_AF.esm"
+
+        # Normalize backslashes to single
+        $junctionName = $junctionName -replace '\\\\+', '\'
+        $target = $target -replace '\\\\+', '\'
+
+        # Log the resolved junction name and target
+        $logBox.AppendText("RESOLVED JUNCTION: $junctionName => $target`r`n")
+
+        # Create the junction if it doesn't already exist
+        if (-not (Test-Path $junctionName)) {
+            cmd /c mklink /J "$junctionName" "$target" # Use the original target path
+            $logBox.AppendText("JUNCTION: $junctionName => $target`r`n")
+        } else {
+            $logBox.AppendText("SKIP: Junction already exists: $junctionName`r`n")
+        }
+    }
+}
+
+# Step 5: Handle Xbox Folder Junctions (if applicable)
+$mainXboxBa2 = Join-Path $basePath "$modName - main_xbox.ba2"
+if (Test-Path $mainXboxBa2) {
+    foreach ($target in $junctionTargets.Keys) {
+        # Log the candidate paths for debugging
+        $logBox.AppendText("CANDIDATE (XBOX): $target`r`n")
+
+        # Match only folders named <modname>.esm (case-insensitive)
+        if ($target -match "\\${modName}\.esm$") {
+            # Replace the base game root path with the Xbox root path
+            $xboxTarget = $target -replace [regex]::Escape($rootPath), $xboxRootPath
+
+            # Preserve the full relative path for the Xbox junction name
+            $relativePath = $target -replace [regex]::Escape($rootPath), ''
+            $xboxJunctionName = Join-Path $xboxRootPath $relativePath
+
+            # Replace only <modname>.esm with <modname>_AF.esm
+            $xboxJunctionName = $xboxJunctionName -replace "\\${modName}\.esm$", "\\${modName}_AF.esm"
+
+            # Normalize backslashes to single
+            $xboxJunctionName = $xboxJunctionName -replace '\\\\+', '\'
+            $xboxTarget = $xboxTarget -replace '\\\\+', '\'
+
+            # Log the resolved Xbox junction name and target
+            $logBox.AppendText("RESOLVED JUNCTION (XBOX): $xboxJunctionName => $xboxTarget`r`n")
+
+            # Create the Xbox junction if it doesn't already exist
+            if (-not (Test-Path $xboxJunctionName)) {
+                cmd /c mklink /J "$xboxJunctionName" "$xboxTarget" # Use the original Xbox target path
+                $logBox.AppendText("JUNCTION (XBOX): $xboxJunctionName => $xboxTarget`r`n")
+            } else {
+                $logBox.AppendText("SKIP (XBOX): Junction already exists: $xboxJunctionName`r`n")
+            }
+        }
+    }
+}
+}) # <-- Add this closing brace
+# ...existing code...
 $runButton.Add_Click({
     $enableLogging = $true
     $logLines = @()
@@ -368,12 +491,13 @@ $runButton.Add_Click({
         } catch {
             $logLines += "ZIP ERROR: $_"
             $logBox.AppendText("ZIP ERROR: $_`r`n")
-        }
+        }5
     }
     $progressBar.Value = $progressBar.Maximum
     $logLines += "Log End: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     $logBox.AppendText("Log End: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`r`n")
     $logLines | Set-Content -Path (Join-Path $PSScriptRoot "mod_archiver_log.txt") -Force
+    $afButton.Enabled = $true
     [System.Windows.Forms.MessageBox]::Show("Finished processing mod: $modName", "Done", "OK", "Information")
 })
 
