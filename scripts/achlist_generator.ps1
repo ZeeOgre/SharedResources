@@ -101,7 +101,7 @@ function Generate-Achlist {
         return
     }
 
-    $lines | Set-Content -Path $outputPath -Encoding UTF8
+    [System.IO.File]::WriteAllLines($outputPath, $lines, [System.Text.UTF8Encoding]::new($false))
     [System.Windows.Forms.MessageBox]::Show($form, "Achlist created at:`n$outputPath", "Success", 'OK', 'Information')
 }
 
