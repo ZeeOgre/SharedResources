@@ -353,7 +353,7 @@ $runButton.Add_Click({
     # Collect and copy extra files (.esm, .esp, .ba2, .txt)
     $basePath = Split-Path $inputPath
     Get-ChildItem -Path $basePath -Filter "$modName*" | Where-Object {
-        $_.Extension -in '.esm', '.esp', '.ba2', '.txt'
+        $_.Extension -in '.esm', '.esp', '.ba2', '.txt', '.achlist'
     } | ForEach-Object {
         $src = $_.FullName
         $dst = Join-Path "$backupRoot\$modName" $_.Name
@@ -499,6 +499,8 @@ $runButton.Add_Click({
     $logLines | Set-Content -Path (Join-Path $PSScriptRoot "mod_archiver_log.txt") -Force
     $afButton.Enabled = $true
     [System.Windows.Forms.MessageBox]::Show("Finished processing mod: $modName", "Done", "OK", "Information")
+    Start-Process explorer.exe (Join-Path $backupRoot $modName)
+
 })
 
 $form.ShowDialog()
