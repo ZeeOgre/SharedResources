@@ -1,5 +1,13 @@
 converting overlay tif to dds
 
+
+Overlays go into:
+
+Data/Textures/Terrain/OverlayMasks
+
+with the same name as the worldspace
+
+
 PS G:\SteamLibrary\steamapps\common\Starfield\Tools\AssetWatcher\Plugins\Starfield> .\xtexconv.exe -f BC7_UNORM_SRGB -ft dds -xbox -m 1 -if LINEAR -y -o "G:\temp" "D:\Downloads\DWNArchimedesIslandEstateWorld.tif"
 Microsoft (R) DirectX Texture Converter for Microsoft GDKX for Scarlett
 Copyright (C) Microsoft Corp. All rights reserved.
