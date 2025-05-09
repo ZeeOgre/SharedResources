@@ -1,0 +1,40 @@
+converting overlay tif to dds
+
+PS G:\SteamLibrary\steamapps\common\Starfield\Tools\AssetWatcher\Plugins\Starfield> .\xtexconv.exe -f BC7_UNORM_SRGB -ft dds -xbox -m 1 -if LINEAR -y -o "G:\temp" "D:\Downloads\DWNArchimedesIslandEstateWorld.tif"
+Microsoft (R) DirectX Texture Converter for Microsoft GDKX for Scarlett
+Copyright (C) Microsoft Corp. All rights reserved.
+
+reading D:\Downloads\DWNArchimedesIslandEstateWorld.tif (800x800 R8_UNORM 2D) as
+[Using DirectCompute on "AMD Radeon RX 7900 XTX"]
+ (800x800 BC7_UNORM_SRGB 2D à:Opaque Xbox)
+writing G:\temp\DWNArchimedesIslandEstateWorld.dds
+PS G:\SteamLibrary\steamapps\common\Starfield\Tools\AssetWatcher\Plugins\Starfield> .\xtexconv.exe -f BC7_UNORM_SRGB -ft dds -xbox -m 1 -if LINEAR -y -o "G:\temp" "G:\temp\overlay500x500on700x700.tif"
+Microsoft (R) DirectX Texture Converter for Microsoft GDKX for Scarlett
+Copyright (C) Microsoft Corp. All rights reserved.
+
+reading G:\temp\overlay500x500on700x700.tif (700x700 B8G8R8A8_UNORM 2D) as
+[Using DirectCompute on "AMD Radeon RX 7900 XTX"]
+ (700x700 BC7_UNORM_SRGB 2D à:Opaque Xbox)
+writing G:\temp\overlay500x500on700x700.dds
+PS G:\SteamLibrary\steamapps\common\Starfield\Tools\AssetWatcher\Plugins\Starfield> .\xtexconv.exe -f BC7_UNORM_SRGB -ft dds -xbox -m 1 -if LINEAR -y -o "G:\temp" "G:\temp\overlay100x100on300x300.tif"
+Microsoft (R) DirectX Texture Converter for Microsoft GDKX for Scarlett
+Copyright (C) Microsoft Corp. All rights reserved.
+
+reading G:\temp\overlay100x100on300x300.tif (300x300 B8G8R8A8_UNORM 2D) as
+[Using DirectCompute on "AMD Radeon RX 7900 XTX"]
+ (300x300 BC7_UNORM_SRGB 2D à:Opaque Xbox)
+writing G:\temp\overlay100x100on300x300.dds
+PS G:\SteamLibrary\steamapps\common\Starfield\Tools\AssetWatcher\Plugins\Starfield> .\xtexconv.exe -f BC3_UNORM -ft dds -m 1 -if LINEAR -y -o "G:\temp\pc" "G:\temp\overlay100x100on300x300.tif"
+Microsoft (R) DirectX Texture Converter for Microsoft GDKX for Scarlett
+Copyright (C) Microsoft Corp. All rights reserved.
+
+reading G:\temp\overlay100x100on300x300.tif (300x300 B8G8R8A8_UNORM 2D) as (300x300 BC3_UNORM 2D à:Opaque)
+writing G:\temp\pc\overlay100x100on300x300.dds
+PS G:\SteamLibrary\steamapps\common\Starfield\Tools\AssetWatcher\Plugins\Starfield> .\xtexconv.exe -f BC3_UNORM -ft dds -m 1 -if LINEAR -y -o "G:\temp\pc" "G:\temp\overlay500x500on700x700.tif"
+Microsoft (R) DirectX Texture Converter for Microsoft GDKX for Scarlett
+Copyright (C) Microsoft Corp. All rights reserved.
+
+reading G:\temp\overlay500x500on700x700.tif (700x700 B8G8R8A8_UNORM 2D) as (700x700 BC3_UNORM 2D à:Opaque)
+writing G:\temp\pc\overlay500x500on700x700.dds
+PS G:\SteamLibrary\steamapps\common\Starfield\Tools\AssetWatcher\Plugins\Starfield>
+
