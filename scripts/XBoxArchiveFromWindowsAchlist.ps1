@@ -1,3 +1,11 @@
+param (
+    [string]$InputFile
+)
+
+if (-not $InputFile -and $args.Count -gt 0) {
+    $InputFile = $args[0]
+}
+
 [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
@@ -17,6 +25,29 @@ $form.Text = "Load XBox Archives from Windows Achlist"
 $form.Size = New-Object System.Drawing.Size(600, 400)
 $form.StartPosition = "CenterScreen"
 $form.AllowDrop = $true
+$form.Add_DragEnter({
+    if ($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) {
+        $_.Effect = 'Copy'
+    }
+})
+
+$form.Add_DragDrop({
+    $file = $_.Data.GetData([Windows.Forms.DataFormats]::FileDrop)[0]
+    if ($file -match '\\.(achlist|esm|esp)$') {
+        $ext = [System.IO.Path]::GetExtension($file)
+        $base = [System.IO.Path]::Combine((Split-Path $file), [System.IO.Path]::GetFileNameWithoutExtension($file))
+        if ($ext -ieq ".achlist") {
+            $inputBox.Text = $file
+        } else {
+            $achlistGuess = "$base.achlist"
+            if (Test-Path $achlistGuess) {
+                $inputBox.Text = $achlistGuess
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("Could not find corresponding .achlist for:`n$file", "Missing .achlist", 'OK', 'Warning')
+            }
+        }
+    }
+})
 
 # Input File Label & Textbox
 $inputLabel = New-Object System.Windows.Forms.Label
@@ -27,9 +58,24 @@ $form.Controls.Add($inputLabel)
 
 $inputBox = New-Object System.Windows.Forms.TextBox
 $inputBox.Location = New-Object System.Drawing.Point(100, 10)
-$inputBox.Width = 400
-$inputBox.Text = $config.InputFile
+$inputBox.Width = 300
+$inputBox.Text = if ($InputFile) { $InputFile } elseif ($config.ContainsKey('InputFile')) { $config.InputFile } else { '' }
 $form.Controls.Add($inputBox)
+
+$inputFileButton = New-Object System.Windows.Forms.Button
+$inputFileButton.Text = "..."
+$inputFileButton.Location = New-Object System.Drawing.Point(410, 10)
+$inputFileButton.Add_Click({
+    $fileDialog = New-Object System.Windows.Forms.OpenFileDialog
+    if ($inputBox.Text) {
+        $fileDialog.InitialDirectory = [System.IO.Path]::GetDirectoryName($inputBox.Text)
+    }
+    $fileDialog.Filter = "Achlist/ESM/ESP/TXT Files (*.achlist;*.esm;*.esp;*.txt)|*.achlist;*.esm;*.esp;*.txt|All files (*.*)|*.*"
+    if ($fileDialog.ShowDialog() -eq 'OK') {
+        $inputBox.Text = $fileDialog.FileName
+    }
+})
+$form.Controls.Add($inputFileButton)
 
 # Archiver Path
 $archiverLabel = New-Object System.Windows.Forms.Label
@@ -40,9 +86,25 @@ $form.Controls.Add($archiverLabel)
 
 $archiverBox = New-Object System.Windows.Forms.TextBox
 $archiverBox.Location = New-Object System.Drawing.Point(150, 40)
-$archiverBox.Width = 350
+$archiverBox.Width = 270
 $archiverBox.Text = $config.ArchiverPath
 $form.Controls.Add($archiverBox)
+
+$archiverButton = New-Object System.Windows.Forms.Button
+$archiverButton.Text = "..."
+$archiverButton.Location = New-Object System.Drawing.Point(430, 40)
+$archiverButton.Add_Click({
+    $fileDialog = New-Object System.Windows.Forms.OpenFileDialog
+    if ($archiverBox.Text) {
+        $fileDialog.InitialDirectory = [System.IO.Path]::GetDirectoryName($archiverBox.Text)
+    }
+    $fileDialog.Filter = "Executable Files (*.exe)|*.exe|All files (*.*)|*.*"
+    if ($fileDialog.ShowDialog() -eq 'OK') {
+        $archiverBox.Text = $fileDialog.FileName
+    }
+})
+$form.Controls.Add($archiverButton)
+
 
 # Data Folder
 $dataFolderLabel = New-Object System.Windows.Forms.Label
@@ -217,7 +279,7 @@ if ($windowsArchiveCheckbox.Checked) {
 
     
     Write-Host "Processing completed for both Xbox and Windows archives."
-    [System.Windows.Forms.Application]::Exit()
+   # [System.Windows.Forms.Application]::Exit()
 })
 
 # Show Form
