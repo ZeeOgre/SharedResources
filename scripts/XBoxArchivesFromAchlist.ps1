@@ -13,7 +13,7 @@ if (-not $InputFile -and $args.Count -gt 0) {
 
 # Configuration File Path
 $configPath = "$PSScriptRoot\XBoxArchivesFromAchlist.ini"
-Set-Location $PSScriptRoot
+
 
 # Load Config if it exists
 $config = @{}
@@ -209,11 +209,14 @@ WindowsArchive=$($windowsArchiveCheckbox.Checked)
 SortOnSave=$($sortOnSaveCheckbox.Checked)
 "@
 
+
     $configData | Set-Content $configPath
     $inputFile = $inputBox.Text
     $archiverPath = $archiverBox.Text
     $dataFolder = $dataFolderBox.Text
     $xboxDataPath = $xboxDataBox.Text
+    
+    Push-Location (Split-Path $dataFolder)  # = Starfield root
     
     # Preserve logic from existing script, ensuring archive checkboxes apply
 
