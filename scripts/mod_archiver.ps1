@@ -19,6 +19,7 @@ if (Test-Path $configPath) {
     $config = Get-Content $configPath | ForEach-Object { $_ -replace '\\', '\\' } | ConvertFrom-StringData
 }
 
+$junctionTargets = @{}
 # Create Form
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Mod Archiver"
@@ -189,120 +190,134 @@ $afButton.Enabled = $false  # Initially disabled
 $form.Controls.Add($afButton)
 
 $afButton.Add_Click({
-    $modName = [System.IO.Path]::GetFileNameWithoutExtension($inputBox.Text)
-    $basePath = Split-Path $inputBox.Text
+    $originalAchlistPath = $inputBox.Text
+    if (-not $originalAchlistPath) {
+        $logBox.AppendText("ERROR: Input file is empty.`r`n")
+        return
+    }
+
+    $modName = [System.IO.Path]::GetFileNameWithoutExtension($originalAchlistPath)
+    if ($modName -match '_AF$') {
+        $logBox.AppendText("Already AF version, skipping AF generation.`r`n")
+        return
+    }
+
+    $outputFolder = Split-Path $originalAchlistPath
     $afModName = "${modName}_AF"
-    $achlistPath = Join-Path $basePath "$modName.achlist"
-    $afAchlistPath = Join-Path $basePath "$afModName.achlist"
+    $afAchlistPath = Join-Path $outputFolder "$afModName.achlist"
 
-    # Step 1: Copy files to <modname>_AF.*
-    $filesToCopy = @("$modName.esm", "$modName.esp", "$modName.achlist")
-    foreach ($file in $filesToCopy) {
-        $src = Join-Path $basePath $file
-        $dst = Join-Path $basePath ($file -replace "^$modName", $afModName)
-        if (Test-Path $src) {
-            Copy-Item -Path $src -Destination $dst -Force
-            $logBox.AppendText("COPY: $src => $dst`r`n")
-        }
+    # 1. Write AF achlist
+    (Get-Content $originalAchlistPath) -replace "$modName\.esm", "$afModName.esm" | Set-Content -Path $afAchlistPath
+    $logBox.AppendText("Wrote new AF achlist to $afAchlistPath`r`n")
+    # Copy ESM/ESP files to _AF equivalents
+    $originalEsm = Join-Path $outputFolder "$modName.esm"
+    $afEsm = Join-Path $outputFolder "$afModName.esm"
+    if (Test-Path $originalEsm) {
+        Copy-Item -Path $originalEsm -Destination $afEsm -Force
+        $logBox.AppendText("Copied ESM: $originalEsm => $afEsm`r`n")
+    } else {
+        $logBox.AppendText("WARNING: Original ESM not found at $originalEsm`r`n")
     }
 
-    # Step 2: Modify <modname>_AF.achlist
-    if (Test-Path $afAchlistPath) {
-        (Get-Content $afAchlistPath) -replace "$modName\.esm", "${modName}_AF.esm" | Set-Content -Path $afAchlistPath
-        $logBox.AppendText("MODIFY: Updated $afAchlistPath`r`n")
+    $originalEsp = Join-Path $outputFolder "$modName.esp"
+    $afEsp = Join-Path $outputFolder "$afModName.esp"
+    if (Test-Path $originalEsp) {
+        Copy-Item -Path $originalEsp -Destination $afEsp -Force
+        $logBox.AppendText("Copied ESP: $originalEsp => $afEsp`r`n")
     }
 
-# Step 3: Identify directories for junction points
-$junctionTargets = @{}
-if (Test-Path $achlistPath) {
-    $achlistContent = Get-Content $achlistPath | ConvertFrom-Json
-    foreach ($entry in $achlistContent) {
-        $entry = $entry -replace '/', '\\'
-        if ($entry -match "^Data\\") {
-            # Truncate only the first "\Data\Data" to "\Data"
-            $rootPath = $dataBox.Text -replace '(?i)\\Data\\Data$', '\\Data'
-            $xboxRootPath = $xboxBox.Text -replace '(?i)\\Data\\Data$', '\\Data'
+    # 2. Create junction point for the ESM folder
+	foreach ($target in $junctionTargets.Keys) {
 
-            # Construct the full path for the base game
-            $fullPath = Join-Path $rootPath $entry.Substring(5) # Remove the first "Data\" prefix
-            $parentDir = Split-Path $fullPath -Parent
-            $junctionTargets[$parentDir] = $true
-
-            # Log the resolved path for debugging
-            $logBox.AppendText("RESOLVED [Base Path]: $fullPath`r`n")
-        }
-    }
+        if ($junctionTargets.Count -eq 0) {
+        $logBox.AppendText("ERROR: No junction targets were found. Junction creation skipped.`r`n")
+        [System.Windows.Forms.MessageBox]::Show("No junction targets found for $modName.esm. The AF folder structure may be incomplete or incorrectly built.", "Junction Creation Failed", "OK", "Error")
+        return
 }
 
-# Step 4: Create junction points
-foreach ($target in $junctionTargets.Keys) {
-    # Log the candidate paths for debugging
-    $logBox.AppendText("CANDIDATE: $target`r`n")
+		$logBox.AppendText("CANDIDATE: $target`r`n")
 
-    # Match only folders named <modname>.esm (case-insensitive)
-    if ($target -match "\\${modName}\.esm$") {
-        # Preserve the full relative path for the junction name
-        $relativePath = $target -replace [regex]::Escape($rootPath), ''
-        $junctionName = Join-Path $rootPath $relativePath
+		if ($target.ToLower() -match "\\$($modName.ToLower())\.esm\\") {
+			$junctionName = $target -creplace "\\$([Regex]::Escape($modName)).esm\\", "\\${modName}_AF.esm\\"
 
-        # Replace only <modname>.esm with <modname>_AF.esm
-        $junctionName = $junctionName -replace "\\${modName}\.esm$", "\\${modName}_AF.esm"
+			# Normalize
+			$junctionName = $junctionName -replace '\\\\+', '\'
+			$target = $target -replace '\\\\+', '\'
 
-        # Normalize backslashes to single
-        $junctionName = $junctionName -replace '\\\\+', '\'
-        $target = $target -replace '\\\\+', '\'
+			$junctionName = $target -creplace "\\$([Regex]::Escape($modName)).esm\\", "\\${modName}_AF.esm\\"
+			$junctionName = $junctionName -replace '\\\\+', '\'
+			$target = $target -replace '\\\\+', '\'
 
-        # Log the resolved junction name and target
-        $logBox.AppendText("RESOLVED JUNCTION: $junctionName => $target`r`n")
+			# Ensure parent folder of junction exists
+			$jpParent = Split-Path $junctionName -Parent
+			if (-not (Test-Path $jpParent)) {
+				New-Item -ItemType Directory -Force -Path $jpParent | Out-Null
+				$logBox.AppendText("CREATED PARENT DIR: $jpParent`r`n")
+			}
 
-        # Create the junction if it doesn't already exist
-        if (-not (Test-Path $junctionName)) {
-            cmd /c mklink /J "$junctionName" "$target" # Use the original target path
-            $logBox.AppendText("JUNCTION: $junctionName => $target`r`n")
-        } else {
-            $logBox.AppendText("SKIP: Junction already exists: $junctionName`r`n")
-        }
-    }
+			# Make sure the actual target exists (this is the real path we point to)
+			if (-not (Test-Path $target)) {
+				New-Item -ItemType Directory -Force -Path $target | Out-Null
+				$logBox.AppendText("CREATED TARGET DIR: $target`r`n")
+			}
+
+			# Only make junction if the link path doesn't exist yet
+			if (-not (Test-Path $junctionName)) {
+				cmd /c mklink /J "`"$junctionName`"" "`"$target`""
+				$logBox.AppendText("JUNCTION CREATED: $junctionName => $target`r`n")
+			} else {
+				$logBox.AppendText("SKIP: Junction already exists: $junctionName`r`n")
+			}
+
+
+			if (-not (Test-Path $junctionName)) {
+				$jpResult = cmd /c mklink /J "`"$junctionName`"" "`"$target`""
+                if ($LASTEXITCODE -ne 0) {
+                    $logBox.AppendText(" ERROR: Failed to create junction: $junctionName => $target`r`n")
+                    [System.Windows.Forms.MessageBox]::Show("Failed to create junction:`n$junctionName`n`nTarget:`n$target", "mklink Failure", "OK", "Error")
+                    return
 }
+				$logBox.AppendText("JUNCTION CREATED: $junctionName => $target`r`n")
+			} else {
+				$logBox.AppendText("SKIP: Junction already exists: $junctionName`r`n")
+			}
+		}
+	}
 
-# Step 5: Handle Xbox Folder Junctions (if applicable)
-$mainXboxBa2 = Join-Path $basePath "$modName - main_xbox.ba2"
-if (Test-Path $mainXboxBa2) {
-    foreach ($target in $junctionTargets.Keys) {
-        # Log the candidate paths for debugging
-        $logBox.AppendText("CANDIDATE (XBOX): $target`r`n")
 
-        # Match only folders named <modname>.esm (case-insensitive)
-        if ($target -match "\\${modName}\.esm$") {
-            # Replace the base game root path with the Xbox root path
-            $xboxTarget = $target -replace [regex]::Escape($rootPath), $xboxRootPath
+    #2.a Regen the ba2's
+    $logBox.AppendText("Attempting to run: $PSScriptRoot\XBoxArchivesFromAchlist.ps1 $afAchlistPath`r`n")
+    $logBox.AppendText("Attempting to run: $PSScriptRoot\XBoxArchivesFromAchlist.ps1 $afAchlistPath`r`n")
+    Push-Location -Path (Split-Path $afAchlistPath)
 
-            # Preserve the full relative path for the Xbox junction name
-            $relativePath = $target -replace [regex]::Escape($rootPath), ''
-            $xboxJunctionName = Join-Path $xboxRootPath $relativePath
+    & "$PSScriptRoot\XBoxArchivesFromAchlist.ps1" $afAchlistPath
 
-            # Replace only <modname>.esm with <modname>_AF.esm
-            $xboxJunctionName = $xboxJunctionName -replace "\\${modName}\.esm$", "\\${modName}_AF.esm"
+    Pop-Location
 
-            # Normalize backslashes to single
-            $xboxJunctionName = $xboxJunctionName -replace '\\\\+', '\'
-            $xboxTarget = $xboxTarget -replace '\\\\+', '\'
-
-            # Log the resolved Xbox junction name and target
-            $logBox.AppendText("RESOLVED JUNCTION (XBOX): $xboxJunctionName => $xboxTarget`r`n")
-
-            # Create the Xbox junction if it doesn't already exist
-            if (-not (Test-Path $xboxJunctionName)) {
-                cmd /c mklink /J "$xboxJunctionName" "$xboxTarget" # Use the original Xbox target path
-                $logBox.AppendText("JUNCTION (XBOX): $xboxJunctionName => $xboxTarget`r`n")
-            } else {
-                $logBox.AppendText("SKIP (XBOX): Junction already exists: $xboxJunctionName`r`n")
-            }
-        }
+    if ($LASTEXITCODE -ne 0) {
+        $logBox.AppendText("ERROR: Failed to run XBoxArchivesFromAchlist.ps1 on $afAchlistPath`r`n")
+        $logBox.AppendText("ERROR: Archive script exited with code $LASTEXITCODE`r`n")
+        [System.Windows.Forms.MessageBox]::Show("Failed to run XBoxArchivesFromAchlist.ps1 on $afAchlistPath", "Script Failure", "OK", "Error")
+        return
     }
-}
-}) # <-- Add this closing brace
-# ...existing code...
+    $logBox.AppendText("Archive script run completed (if no errors).`r`n")
+
+    $logBox.AppendText("Archive script run completed (if no errors).`r`n")
+ 
+
+    # 3. Update input path field so user sees it
+    $inputBox.Text = $afAchlistPath
+    $afButton.Enabled = $false
+    $logBox.AppendText("Input file updated to AF version.`r`n")
+    $logBox.AppendText("Make AF button disabled.`r`n")
+
+    # 4. Directly invoke the Run button's click handler
+    $logBox.AppendText("Running archiver process on AF achlist...`r`n")
+    $runButton.PerformClick()
+
+})
+
+
 $runButton.Add_Click({
     $enableLogging = $true
     $logLines = @()
@@ -373,11 +388,20 @@ $runButton.Add_Click({
         $item = $item -replace '/', '\\'
         $relPath = $item -replace '^DATA\\', ''
         $srcPath = Join-Path -Path $dataRoot -ChildPath $relPath
-        $dstPC = Join-Path -Path "$backupRoot\$modName\loose_pc" -ChildPath $relPath
+        $dstPC = Join-Path -Path "$backupRoot\$modName\loose_pc\Data" -ChildPath $relPath
 
         $logLines += "CHECK [Main Copy]: $srcPath"
         $logBox.AppendText("CHECK [Main Copy]: $srcPath`r`n")
 
+        # Check if this path is under a modname.esm folder
+        if ($item -match "\\$modName\.esm\\") {
+            $fullFolder = Split-Path (Join-Path $dataRoot ($item -replace '^DATA\\', '')) -Parent
+            if (-not $script:junctionTargets) { $script:junctionTargets = @{} }
+            if (-not $script:junctionTargets.ContainsKey($fullFolder)) {
+                $script:junctionTargets[$fullFolder] = $fullFolder
+                $logBox.AppendText("TRACK [Junction Candidate]: $fullFolder`r`n")
+            }
+        }
         if (Test-Path $srcPath) {
             New-Item -ItemType Directory -Force -Path (Split-Path $dstPC) | Out-Null
             Copy-Item $srcPath -Destination $dstPC -Force
@@ -386,8 +410,16 @@ $runButton.Add_Click({
         }
 
         if ($relPath.ToLower().EndsWith('.dds')) {
-            $dstXbox = Join-Path "$backupRoot\$modName\loose_xbox" $relPath
+            $dstXbox = Join-Path "$backupRoot\$modName\loose_xbox\Data" $relPath
             $srcXbox = Join-Path $xboxRoot $relPath
+            # Track junction candidates for Xbox `.dds` and `.wem` paths under \modname.esm\
+            if ($relPath -match "\\$modName\.esm\\") {
+                $jpPath = Split-Path (Join-Path $xboxRoot $relPath) -Parent
+                if (-not $junctionTargets.ContainsKey($jpPath)) {
+                    $junctionTargets[$jpPath] = $jpPath
+                    $logBox.AppendText("TRACK [JP Candidate in Xbox]: $jpPath`r`n")
+                }
+            }
             $logLines += "CHECK [Xbox DDS]: $srcXbox"
             $logBox.AppendText("CHECK [Xbox DDS]: $srcXbox`r`n")
             if (Test-Path $srcXbox) {
@@ -399,8 +431,16 @@ $runButton.Add_Click({
         }
 
         if ($relPath.ToLower().EndsWith('.wem')) {
-            $dstXbox = Join-Path "$backupRoot\$modName\loose_xbox" $relPath
+            $dstXbox = Join-Path "$backupRoot\$modName\loose_xbox\Data" $relPath
             $srcXbox = Join-Path $xboxRoot $relPath
+            # Track junction candidates for Xbox `.dds` and `.wem` paths under \modname.esm\
+            if ($relPath -match "\\$modName\.esm\\") {
+                $jpPath = Split-Path (Join-Path $xboxRoot $relPath) -Parent
+                if (-not $junctionTargets.ContainsKey($jpPath)) {
+                    $junctionTargets[$jpPath] = $jpPath
+                    $logBox.AppendText("TRACK [JP Candidate in Xbox]: $jpPath`r`n")
+                }
+            }
             $logLines += "CHECK [Xbox WEM]: $srcXbox"
             $logBox.AppendText("CHECK [Xbox WEM]: $srcXbox`r`n")
             if (Test-Path $srcXbox) {
@@ -422,7 +462,7 @@ $runButton.Add_Click({
             $relSubPath = $relPath -replace '^Scripts\\', ''
             $pscRel = "Scripts\Source\" + $relSubPath.Replace('.pex', '.psc')
             $srcPSC = Join-Path $dataRoot $pscRel
-            $dstPSC = Join-Path "$backupRoot\$modName\loose_pc" $pscRel
+            $dstPSC = Join-Path "$backupRoot\$modName\loose_pc\Data" $pscRel
             $logLines += "CHECK [PSC Source]: $srcPSC"
             $logBox.AppendText("CHECK [PSC Source]: $srcPSC`r`n")
             if (Test-Path $srcPSC) {
@@ -441,7 +481,7 @@ $runButton.Add_Click({
     if ($voiceFolders.Count -gt 0) {
         foreach ($vf in $voiceFolders) {
             $srcFolder = Join-Path $dataRoot "Sound\Voice\$modName.esp\$vf"
-            $dstFolder = Join-Path "$backupRoot\$modName\loose_pc\Sound\Voice\$modName.esp" $vf
+            $dstFolder = Join-Path "$backupRoot\$modName\loose_pc\Data\Sound\Voice\$modName.esp" $vf
             $logLines += "CHECK [ESP Voice Folder]: $srcFolder"
             $logBox.AppendText("CHECK [ESP Voice Folder]: $srcFolder`r`n")
             if (Test-Path $srcFolder) {
@@ -491,7 +531,7 @@ $runButton.Add_Click({
         } catch {
             $logLines += "ZIP ERROR: $_"
             $logBox.AppendText("ZIP ERROR: $_`r`n")
-        }5
+        }
     }
     $progressBar.Value = $progressBar.Maximum
     $logLines += "Log End: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
