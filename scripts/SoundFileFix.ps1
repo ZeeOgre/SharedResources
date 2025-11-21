@@ -37,7 +37,7 @@ if (Test-Path $configPath) {
 # --------------------------------
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Voice Folder Switcher (ESP → ESM)"
-$form.Size = New-Object System.Drawing.Size(650, 520)
+$form.Size = New-Object System.Drawing.Size(650, 540)
 $form.StartPosition = "CenterScreen"
 $form.AllowDrop = $true
 
