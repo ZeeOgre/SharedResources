@@ -20,6 +20,30 @@ $config = @{}
 if (Test-Path $configPath) {
     $config = Get-Content $configPath | ForEach-Object { $_ -replace '\\', '\\' } | ConvertFrom-StringData
 }
+function Sort-AchlistFile {
+    param([string]$filePath)
+
+    if (-not (Test-Path $filePath)) {
+        [System.Windows.Forms.MessageBox]::Show("File not found: $filePath") | Out-Null
+        return
+    }
+
+    try {
+        $jsonContent = Get-Content -Raw -Encoding UTF8 -Path $filePath | ConvertFrom-Json
+        $sorted = $jsonContent | Sort-Object { $_.ToLowerInvariant() }
+        $json = $sorted | ConvertTo-Json -Depth 1
+
+        # Save back to file in UTF8 without BOM
+        $utf8NoBomEncoding = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($filePath, $json, $utf8NoBomEncoding)
+
+        #[System.Windows.Forms.MessageBox]::Show("Successfully sorted and saved.") | Out-Null
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to sort file: $_") | Out-Null
+    }
+}
+
 
 # Create Form
 $form = New-Object System.Windows.Forms.Form
@@ -242,9 +266,9 @@ SortOnSave=$($sortOnSaveCheckbox.Checked)
     
     $jsonData = Get-Content $inputFile -Raw | ConvertFrom-Json
     if ($sortOnSaveCheckbox.Checked) {
-    $jsonData = $jsonData | Sort-Object { $_.ToLowerInvariant() }
-    $jsonData | ConvertTo-Json -Depth 1 | Set-Content $inputFile -Encoding UTF8
-}
+        Sort-AchlistFile -filePath $inputFile
+    }
+
 
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($inputFile)
     
@@ -318,3 +342,5 @@ if ($InputFile -and (Test-Path $InputFile)) {
 } else {
     $form.ShowDialog()
 }
+
+
