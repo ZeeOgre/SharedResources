@@ -977,7 +977,7 @@ function Invoke-Backup {
         $pcEspVoicePath = Join-Path $DataRoot ("sound\voice\{0}.esp" -f $modName)
         if (Test-Path $pcEspVoicePath) {
             $dstPcEspVoice = Join-Path (Join-Path $modBackupRoot "loose_pc\Data") ("sound\voice\{0}.esp" -f $modName)
-
+            
             $logBox.AppendText(
                 "COPY [PC ESP Voice Tree, excluding WEM/FFX] (thinking, GUI may freeze briefly):`r`n" +
                 "  $pcEspVoicePath`r`n" +
@@ -986,6 +986,8 @@ function Invoke-Backup {
 
             # Optional: update status line so it’s obvious what’s happening
             $statusLabel.Text = "Copying PC ESP voice tree (GUI may freeze briefly)..."
+            
+            Invoke-UiPump
 
             New-Item -ItemType Directory -Force -Path (Split-Path $dstPcEspVoice) | Out-Null
             Copy-Item -Path $pcEspVoicePath -Destination $dstPcEspVoice -Recurse -Force -Exclude '*.wem','*.ffxanim'
