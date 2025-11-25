@@ -102,27 +102,28 @@ function Rebuild-AchlistFromEsmVoice {
         }
 
         $newVoiceAssets = Get-ChildItem -Path $voiceRoot -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -in '.wem' } |
+            Where-Object { $_.Extension -in '.wem', '.ffxanim' } |
             ForEach-Object {
-                $rel = $_.FullName.Substring($DataRoot.Length).TrimStart('\')
-                "DATA\$rel" -replace '\\','/'
+                $rel = $_.FullName.Substring($DataRoot.Length + 1).Replace('/', '\').Replace('\\', '\')
+                "Data\$rel"
             }
 
         $LogBox.AppendText("Found $($newVoiceAssets.Count) new ESM voice assets.`r`n")
 
-        # Remove any old DATA\sound\voice\<mod>.esp entries
-        $prefixEsp = "DATA/sound/voice/$ModName.esp"
-        $assets = $assets | Where-Object { $_ -notlike "$prefixEsp*" }
-
-        # Remove any old DATA\sound\voice\<mod>.esm entries
-        $prefixEsm = "DATA/sound/voice/$ModName.esm"
-        $assets = $assets | Where-Object { $_ -notlike "$prefixEsm*" }
+        # Remove any existing .wem or .ffxanim entries (both ESP and ESM will be replaced)
+        $assets = $assets | Where-Object { 
+            $_ -notlike "*.wem" -and $_ -notlike "*.ffxanim" 
+        }
 
         # Add new ESM entries
         $assets = @($assets + $newVoiceAssets) 
 
+        # Sort the assets before writing
+        $assets = $assets | Sort-Object
+
         # Write back, compact
-        $assets | ConvertTo-Json -Compress | Set-Content -Path $AchlistPath -Encoding UTF8
+        Write-AchlistProper -Items $assets -OutPath $AchlistPath
+
         $LogBox.AppendText("achlist updated with new ESM voice entries.`r`n")
     }
     catch {
@@ -621,9 +622,10 @@ function Invoke-Ba2Archives {
     # Optional sort
     if ($DoSort -and $jsonData) {
         $jsonData = $jsonData | Sort-Object
-        $jsonData | ConvertTo-Json -Compress | Set-Content -Path $AchlistPath -Encoding UTF8
+        Write-AchlistProper -Items $jsonData -OutPath $AchlistPath
         $logBox.AppendText("Achlist JSON sorted and saved.`r`n")
     }
+
 
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($AchlistPath)
 
@@ -816,6 +818,21 @@ function New-ZipFromFolder {
     }
 }
 
+function Write-AchlistProper {
+    param(
+        [string[]]$Items,
+        [string]$OutPath
+    )
+
+    # ConvertTo-Json pretty format produces newline-separated entries.
+    $json = $Items | ConvertTo-Json -Depth 5
+
+    # CK requires a CRLF after each line except the final bracket.
+    # ConvertTo-Json already includes newlines but Set-Content sometimes normalizes them.
+    # Use Out-File a la your working scripts.
+    $json | Out-File -FilePath $OutPath -Encoding ascii
+}
+
 
 # Junction targets collected during backup for AF
 $script:junctionTargets = @{}
@@ -864,18 +881,13 @@ function Invoke-Backup {
 
     $modBackupRoot = Join-Path $BackupRoot $modName
 
-    # NEW: Clean only loose_pc and loose_xbox, leave "backup" (and anything else) alone
+    # Clean everything except "backup" folder
     if ($DoClean -and (Test-Path $modBackupRoot)) {
-        $logBox.AppendText("Clean copy enabled - removing loose_pc and loose_xbox under:`r`n  $modBackupRoot`r`n")
+        $logBox.AppendText("Clean copy enabled - removing all folders except 'backup' under:`r`n  $modBackupRoot`r`n")
 
-        foreach ($folderName in @('loose_pc', 'loose_xbox')) {
-            $targetFolder = Join-Path $modBackupRoot $folderName
-            if (Test-Path $targetFolder) {
-                $logBox.AppendText("  REMOVE DIR: $targetFolder`r`n")
-                Remove-Item -Path $targetFolder -Recurse -Force
-            } else {
-                $logBox.AppendText("  SKIP (not found): $targetFolder`r`n")
-            }
+        Get-ChildItem -Path $modBackupRoot -Directory | Where-Object { $_.Name -ne "backup" } | ForEach-Object {
+            $logBox.AppendText("  REMOVE DIR: $($_.FullName)`r`n")
+            Remove-Item -Path $_.FullName -Recurse -Force
         }
     }
 
@@ -897,6 +909,9 @@ function Invoke-Backup {
         $progressBar.Maximum = [math]::Max(1, $total)
         $progressBar.Value = 0
         $script:junctionTargets = @{}
+        
+        # Track terrain chunks for TIF overlay copying
+        $terrainChunks = @{}
 
         $count = 0
         foreach ($item in $jsonData) {
@@ -905,7 +920,7 @@ function Invoke-Backup {
             $relLower = $relPath.ToLowerInvariant()
 
             $srcPath = Join-Path -Path $DataRoot -ChildPath $relPath
-            $dstPC   = Join-Path -Path (Join-Path $modBackupRoot "loose_pc\Data") -ChildPath $relPath
+            $dstPC   = Join-Path -Path (Join-Path $modBackupRoot "LOOSEFILES\Data") -ChildPath $relPath
 
             $logBox.AppendText("CHECK [Main Copy]: $srcPath`r`n")
 
@@ -922,13 +937,20 @@ function Invoke-Backup {
                 New-Item -ItemType Directory -Force -Path (Split-Path $dstPC) | Out-Null
                 Copy-Item -Path $srcPath -Destination $dstPC -Force
                 $logBox.AppendText("COPY: $srcPath => $dstPC`r`n")
+                
+                # Track terrain chunks for TIF overlay copying
+                if ($relLower.EndsWith('.btd') -and $relPath -like "terrain\*") {
+                    $chunkName = [System.IO.Path]::GetFileNameWithoutExtension($srcPath)
+                    $terrainChunks[$chunkName] = $true
+                    $logBox.AppendText("TRACK [Terrain Chunk]: $chunkName`r`n")
+                }
             }
 
             # --- Xbox extras ---
 
             # 1) For .wem: also copy Xbox version into loose_xbox
             if ($relLower.EndsWith('.wem')) {
-                $dstXbox = Join-Path (Join-Path $modBackupRoot "loose_xbox\Data") $relPath
+                $dstXbox = Join-Path (Join-Path $modBackupRoot "LOOSEFILES\XBOX\Data") $relPath
                 $srcXbox = Join-Path $XboxRoot $relPath
                 $logBox.AppendText("CHECK [Xbox WEM]: $srcXbox`r`n")
                 if (Test-Path $srcXbox) {
@@ -940,7 +962,7 @@ function Invoke-Backup {
 
             # 2) For .dds textures: also copy Xbox version into loose_xbox
             if ($relLower.EndsWith('.dds') -and $relLower.StartsWith('textures\')) {
-                $dstXboxTex = Join-Path (Join-Path $modBackupRoot "loose_xbox\Data") $relPath
+                $dstXboxTex = Join-Path (Join-Path $modBackupRoot "LOOSEFILES\XBOX\Data") $relPath
                 $srcXboxTex = Join-Path $XboxRoot $relPath   # XboxRoot is the Data folder
                 $logBox.AppendText("CHECK [Xbox DDS]: $srcXboxTex`r`n")
                 if (Test-Path $srcXboxTex) {
@@ -957,7 +979,7 @@ function Invoke-Backup {
                 $relSubPath = $relPath -replace '^Scripts\\', ''
                 $pscRel     = "Scripts\Source\" + $relSubPath.Replace('.pex', '.psc')
                 $srcPSC     = Join-Path $DataRoot $pscRel
-                $dstPSC     = Join-Path (Join-Path $modBackupRoot "loose_pc\Data") $pscRel
+                $dstPSC     = Join-Path (Join-Path $modBackupRoot "LOOSEFILES\Data") $pscRel
                 $logBox.AppendText("CHECK [PSC Source]: $srcPSC`r`n")
                 if (Test-Path $srcPSC) {
                     New-Item -ItemType Directory -Force -Path (Split-Path $dstPSC) | Out-Null
@@ -976,7 +998,7 @@ function Invoke-Backup {
         # --- Also capture PC ESP voice tree (source WAVs), excluding WEM/FFX ---
         $pcEspVoicePath = Join-Path $DataRoot ("sound\voice\{0}.esp" -f $modName)
         if (Test-Path $pcEspVoicePath) {
-            $dstPcEspVoice = Join-Path (Join-Path $modBackupRoot "loose_pc\Data") ("sound\voice\{0}.esp" -f $modName)
+            $dstPcEspVoice = Join-Path (Join-Path $modBackupRoot "LOOSEFILES\Data") ("sound\voice\{0}.esp" -f $modName)
             
             $logBox.AppendText(
                 "COPY [PC ESP Voice Tree, excluding WEM/FFX] (thinking, GUI may freeze briefly):`r`n" +
@@ -997,6 +1019,40 @@ function Invoke-Backup {
         else {
             $logBox.AppendText("SKIP: No PC ESP voice folder found:`r`n  $pcEspVoicePath`r`n")
         }
+        # --- EXTRA: Terrain\<modname> folder from Data ---
+        $terrainModFolder = Join-Path $DataRoot ("terrain\{0}" -f $modName)
+        if (Test-Path $terrainModFolder) {
+            $dstTerrainParent = Join-Path (Join-Path $modBackupRoot "LOOSEFILES\Data") "terrain"
+            New-Item -ItemType Directory -Force -Path $dstTerrainParent | Out-Null
+            $logBox.AppendText("COPY [Terrain Mod Folder]: $terrainModFolder => $dstTerrainParent`r`n")
+            Copy-Item -Path $terrainModFolder -Destination $dstTerrainParent -Recurse -Force
+        } else {
+            $logBox.AppendText("SKIP: No Data\terrain\$modName folder found.`r`n")
+        }
+
+        # --- EXTRA: Terrain overlay TIFs from Source\TGATextures\Terrain\OverlayMasks ---
+        if ($terrainChunks.Count -gt 0) {
+            
+            $overlayRoot = Join-Path $DataRoot "Source\TGATextures\Terrain\OverlayMasks"
+            foreach ($chunkName in $terrainChunks.Keys) {
+                $srcTif = Join-Path $overlayRoot ("{0}.tif" -f $chunkName)
+                if (Test-Path $srcTif) {
+                    $dstOverlayRoot = Join-Path $modBackupRoot "LOOSEFILES\Data\Source\TGATextures\Terrain\OverlayMasks"
+                    New-Item -ItemType Directory -Force -Path $dstOverlayRoot | Out-Null
+                    $dstTif = Join-Path $dstOverlayRoot ([System.IO.Path]::GetFileName($srcTif))
+                    $logBox.AppendText("COPY [Terrain Overlay TIF]: $srcTif => $dstTif`r`n")
+                    Copy-Item -Path $srcTif -Destination $dstTif -Force
+                }
+                else {
+                    $logBox.AppendText("SKIP [Overlay TIF missing]: $srcTif`r`n")
+                }
+            }
+        }
+        else {
+            $logBox.AppendText("No terrain BTD chunks tracked; skipping overlay TIF copy.`r`n")
+        }
+
+
 
     }
 
@@ -1025,6 +1081,11 @@ function Invoke-Backup {
         catch {
             $logBox.AppendText("ZIP ERROR: $($_.Exception.Message)`r`n")
         }
+    }
+    # Open the backup destination folder in Explorer
+    if (Test-Path $modbackupRoot) {
+        $logBox.AppendText("Opening backup folder in Explorer:`r`n  $modBackupRoot`r`n")
+        Start-Process "explorer.exe" -ArgumentList $modBackupRoot
     }
 }  # <-- closes Invoke-Backup
 
@@ -1202,6 +1263,8 @@ $runButton.Add_Click({
 
         # Only after a backup in this session do we allow AF
         $afButton.Enabled = $true
+
+
     }
 
     $statusLabel.Text = "Run completed."
