@@ -364,3 +364,4 @@ FodyWeavers.xsd
 
 #ignore .ini file changes going forward
 .ini
+scripts/StarfieldArchiveManager.ini

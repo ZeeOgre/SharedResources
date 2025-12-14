@@ -125,7 +125,7 @@ function Rebuild-AchlistFromEsmVoice {
         Write-AchlistProper -Items $assets -OutPath $AchlistPath
 
         $LogBox.AppendText("achlist updated with new ESM voice entries.`r`n")
-    }
+    }   
     catch {
         $LogBox.AppendText("ERROR rebuilding achlist: $($_.Exception.Message)`r`n")
     }
@@ -136,7 +136,7 @@ function Rebuild-AchlistFromEsmVoice {
 # -------------------------------------------------------------------
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Mod Archiver (Unified)"
-$form.Size = New-Object System.Drawing.Size(640, 720)
+$form.Size = New-Object System.Drawing.Size(640, 800)
 $form.StartPosition = "CenterScreen"
 $form.AllowDrop = $true
 
@@ -288,6 +288,35 @@ $archiverButton.Add_Click({
 })
 $form.Controls.Add($archiverButton)
 
+# Dmmdeps.exe Path
+$dmmdepsLabel = New-Object System.Windows.Forms.Label
+$dmmdepsLabel.Text = "Dmmdeps.exe Path:"
+$dmmdepsLabel.Location = New-Object System.Drawing.Point(10, 160)
+$dmmdepsLabel.AutoSize = $true
+$form.Controls.Add($dmmdepsLabel)
+
+$dmmdepsBox = New-Object System.Windows.Forms.TextBox
+$dmmdepsBox.Location = New-Object System.Drawing.Point(260, 160)
+$dmmdepsBox.Width = 300
+$dmmdepsBox.Text = if ($config.ContainsKey('DmmdepsPath')) { $config['DmmdepsPath'] } else { '' }
+$form.Controls.Add($dmmdepsBox)
+
+$dmmdepsButton = New-Object System.Windows.Forms.Button
+$dmmdepsButton.Text = "..."
+$dmmdepsButton.Location = New-Object System.Drawing.Point(570, 158)
+$dmmdepsButton.Width = 40
+$dmmdepsButton.Add_Click({
+    $fileDialog = New-Object System.Windows.Forms.OpenFileDialog
+    $fileDialog.Filter = "Executable Files (*.exe)|*.exe|All Files (*.*)|*.*"
+    if ($dmmdepsBox.Text) {
+        $fileDialog.InitialDirectory = [System.IO.Path]::GetDirectoryName($dmmdepsBox.Text)
+    }
+    if ($fileDialog.ShowDialog() -eq 'OK') {
+        $dmmdepsBox.Text = $fileDialog.FileName
+    }
+})
+$form.Controls.Add($dmmdepsButton)
+
 # -------------------------------------------------------------------
 #  Feature checkbox rows (one row per area)
 # -------------------------------------------------------------------
@@ -295,48 +324,62 @@ $form.Controls.Add($archiverButton)
 # Voice File Management
 $voiceLabel = New-Object System.Windows.Forms.Label
 $voiceLabel.Text = "Voice File Management:"
-$voiceLabel.Location = New-Object System.Drawing.Point(10, 170)
+$voiceLabel.Location = New-Object System.Drawing.Point(10, 200)
 $voiceLabel.AutoSize = $true
 $form.Controls.Add($voiceLabel)
 
 $voiceUpdateCheckbox = New-Object System.Windows.Forms.CheckBox
 $voiceUpdateCheckbox.Text = "Voice folder update (ESP to ESM)"
-$voiceUpdateCheckbox.Location = New-Object System.Drawing.Point(30, 190)
+$voiceUpdateCheckbox.Location = New-Object System.Drawing.Point(30, 220)
 $voiceUpdateCheckbox.AutoSize = $true
 $voiceUpdateCheckbox.Checked = Get-Bool -Config $config -Key 'VoiceFolderUpdate' -Default:$false
 $form.Controls.Add($voiceUpdateCheckbox)
 
 $rebuildAchlistCheckbox = New-Object System.Windows.Forms.CheckBox
 $rebuildAchlistCheckbox.Text = "Rebuild .achlist voice entries"
-$rebuildAchlistCheckbox.Location = New-Object System.Drawing.Point(330, 190)
+$rebuildAchlistCheckbox.Location = New-Object System.Drawing.Point(330, 220)
 $rebuildAchlistCheckbox.AutoSize = $true
 $rebuildAchlistCheckbox.Checked = Get-Bool -Config $config -Key 'RebuildAchlist' -Default:$false
 $form.Controls.Add($rebuildAchlistCheckbox)
 
+# Archive Management
+$archiveLabel = New-Object System.Windows.Forms.Label
+$archiveLabel.Text = "Archive Management:"
+$archiveLabel.Location = New-Object System.Drawing.Point(10, 250)
+$archiveLabel.AutoSize = $true
+$form.Controls.Add($archiveLabel)
+
+$useDmmdepsCheckbox = New-Object System.Windows.Forms.CheckBox
+$useDmmdepsCheckbox.Text = "Use dmmdeps"
+$useDmmdepsCheckbox.Location = New-Object System.Drawing.Point(30, 270)
+$useDmmdepsCheckbox.AutoSize = $true
+$useDmmdepsCheckbox.Checked = Get-Bool -Config $config -Key 'UseDmmdeps' -Default:$false
+$form.Controls.Add($useDmmdepsCheckbox)
+
 # BA2 Archive Management
 $ba2Label = New-Object System.Windows.Forms.Label
 $ba2Label.Text = "BA2 Archive Management:"
-$ba2Label.Location = New-Object System.Drawing.Point(10, 220)
+$ba2Label.Location = New-Object System.Drawing.Point(10, 300)
 $ba2Label.AutoSize = $true
 $form.Controls.Add($ba2Label)
 
 $xboxArchiveCheckbox = New-Object System.Windows.Forms.CheckBox
 $xboxArchiveCheckbox.Text = "Xbox Archive"
-$xboxArchiveCheckbox.Location = New-Object System.Drawing.Point(30, 240)
+$xboxArchiveCheckbox.Location = New-Object System.Drawing.Point(30, 320)
 $xboxArchiveCheckbox.AutoSize = $true
 $xboxArchiveCheckbox.Checked = Get-Bool -Config $config -Key 'XboxArchive' -Default:$true
 $form.Controls.Add($xboxArchiveCheckbox)
 
 $windowsArchiveCheckbox = New-Object System.Windows.Forms.CheckBox
 $windowsArchiveCheckbox.Text = "Windows Archive"
-$windowsArchiveCheckbox.Location = New-Object System.Drawing.Point(180, 240)
+$windowsArchiveCheckbox.Location = New-Object System.Drawing.Point(180, 320)
 $windowsArchiveCheckbox.AutoSize = $true
 $windowsArchiveCheckbox.Checked = Get-Bool -Config $config -Key 'WindowsArchive' -Default:$true
 $form.Controls.Add($windowsArchiveCheckbox)
 
 $sortAchlistCheckbox = New-Object System.Windows.Forms.CheckBox
 $sortAchlistCheckbox.Text = "Sort .achlist before saving"
-$sortAchlistCheckbox.Location = New-Object System.Drawing.Point(340, 240)
+$sortAchlistCheckbox.Location = New-Object System.Drawing.Point(340, 320)
 $sortAchlistCheckbox.AutoSize = $true
 $sortAchlistCheckbox.Checked = Get-Bool -Config $config -Key 'SortAchlist' -Default:$false
 $form.Controls.Add($sortAchlistCheckbox)
@@ -344,20 +387,20 @@ $form.Controls.Add($sortAchlistCheckbox)
 # Backup Management
 $backupLabel = New-Object System.Windows.Forms.Label
 $backupLabel.Text = "Backup Management:"
-$backupLabel.Location = New-Object System.Drawing.Point(10, 270)
+$backupLabel.Location = New-Object System.Drawing.Point(10, 350)
 $backupLabel.AutoSize = $true
 $form.Controls.Add($backupLabel)
 
 $copyCheckbox = New-Object System.Windows.Forms.CheckBox
 $copyCheckbox.Text = "Copy Files to Backup Structure"
-$copyCheckbox.Location = New-Object System.Drawing.Point(30, 290)
+$copyCheckbox.Location = New-Object System.Drawing.Point(30, 370)
 $copyCheckbox.AutoSize = $true
 $copyCheckbox.Checked = Get-Bool -Config $config -Key 'Copy' -Default:$true
 $form.Controls.Add($copyCheckbox)
 
 $zipCheckbox = New-Object System.Windows.Forms.CheckBox
 $zipCheckbox.Text = "Create Dated Zip"
-$zipCheckbox.Location = New-Object System.Drawing.Point(260, 290)
+$zipCheckbox.Location = New-Object System.Drawing.Point(260, 370)
 $zipCheckbox.AutoSize = $true
 $zipCheckbox.Checked = Get-Bool -Config $config -Key 'Zip' -Default:$true
 $form.Controls.Add($zipCheckbox)
@@ -365,7 +408,7 @@ $form.Controls.Add($zipCheckbox)
 # NEW: Clean Copy
 $cleanCopyCheckbox = New-Object System.Windows.Forms.CheckBox
 $cleanCopyCheckbox.Text = "Clean copy (remove loose_pc/loose_xbox)"
-$cleanCopyCheckbox.Location = New-Object System.Drawing.Point(430, 290)
+$cleanCopyCheckbox.Location = New-Object System.Drawing.Point(430, 370)
 $cleanCopyCheckbox.AutoSize = $true
 $cleanCopyCheckbox.Checked = Get-Bool -Config $config -Key 'CleanCopy' -Default:$false
 $form.Controls.Add($cleanCopyCheckbox)
@@ -373,14 +416,14 @@ $form.Controls.Add($cleanCopyCheckbox)
 # "Select All" – turn on all feature checkboxes (no run)
 $doAllButton = New-Object System.Windows.Forms.Button
 $doAllButton.Text = "Select All"
-$doAllButton.Location = New-Object System.Drawing.Point(30, 320)
+$doAllButton.Location = New-Object System.Drawing.Point(30, 400)
 $doAllButton.Width = 100
 $form.Controls.Add($doAllButton)
 
 # Log label + box
 $logLabel = New-Object System.Windows.Forms.Label
 $logLabel.Text = "Log:"
-$logLabel.Location = New-Object System.Drawing.Point(10, 350)
+$logLabel.Location = New-Object System.Drawing.Point(10, 430)
 $logLabel.AutoSize = $true
 $form.Controls.Add($logLabel)
 
@@ -388,19 +431,19 @@ $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Multiline = $true
 $logBox.ScrollBars = "Vertical"
 $logBox.ReadOnly = $true
-$logBox.Location = New-Object System.Drawing.Point(10, 370)
+$logBox.Location = New-Object System.Drawing.Point(10, 450)
 $logBox.Size = New-Object System.Drawing.Size(600, 170)
 $form.Controls.Add($logBox)
 
 # Status + progress
 $statusLabel = New-Object System.Windows.Forms.Label
-$statusLabel.Location = New-Object System.Drawing.Point(10, 550)
+$statusLabel.Location = New-Object System.Drawing.Point(10, 630)
 $statusLabel.Size = New-Object System.Drawing.Size(600, 20)
 $statusLabel.Text = ""
 $form.Controls.Add($statusLabel)
 
 $progressBar = New-Object System.Windows.Forms.ProgressBar
-$progressBar.Location = New-Object System.Drawing.Point(10, 575)
+$progressBar.Location = New-Object System.Drawing.Point(10, 655)
 $progressBar.Size = New-Object System.Drawing.Size(600, 20)
 $form.Controls.Add($progressBar)
 
@@ -409,20 +452,20 @@ $form.Controls.Add($progressBar)
 # -------------------------------------------------------------------
 $runButton = New-Object System.Windows.Forms.Button
 $runButton.Text = "Run"
-$runButton.Location = New-Object System.Drawing.Point(200, 610)
+$runButton.Location = New-Object System.Drawing.Point(200, 690)
 $runButton.Width = 80
 $form.Controls.Add($runButton)
 
 $afButton = New-Object System.Windows.Forms.Button
 $afButton.Text = "Make AF Version"
-$afButton.Location = New-Object System.Drawing.Point(290, 610)
+$afButton.Location = New-Object System.Drawing.Point(290, 690)
 $afButton.Width = 110
 $afButton.Enabled = $false
 $form.Controls.Add($afButton)
 
 $closeButton = New-Object System.Windows.Forms.Button
 $closeButton.Text = "Close"
-$closeButton.Location = New-Object System.Drawing.Point(410, 610)
+$closeButton.Location = New-Object System.Drawing.Point(410, 690)
 $closeButton.Width = 80
 $closeButton.Add_Click({ $form.Close() })
 $form.Controls.Add($closeButton)
@@ -575,6 +618,117 @@ function Invoke-VoiceManagement {
     }
 }
 
+function Invoke-DmmdepsGeneration {
+    param(
+        [string]$DmmdepsPath,
+        [string]$InputPath,
+        [string]$DataFolder
+    )
+
+    if (-not (Test-Path $DmmdepsPath)) {
+        [System.Windows.Forms.MessageBox]::Show("Dmmdeps.exe path is invalid:`r`n$DmmdepsPath", "Error", 'OK', 'Error') | Out-Null
+        return $false
+    }
+    if (-not (Test-Path $DataFolder)) {
+        [System.Windows.Forms.MessageBox]::Show("Data Folder does not exist:`r`n$DataFolder", "Error", 'OK', 'Error') | Out-Null
+        return $false
+    }
+
+    # Determine the mod file to run dmmdeps against
+    $modFile = $null
+    $modName = [System.IO.Path]::GetFileNameWithoutExtension($InputPath)
+    
+    # If input is an achlist, we need to find the corresponding mod file
+    if ($InputPath.ToLower().EndsWith(".achlist")) {
+        $logBox.AppendText("Input is achlist, looking for corresponding mod file...`r`n")   
+        
+        # Look for .esp first, then .esm
+        $espPath = Join-Path $DataFolder "$modName.esp"
+        $esmPath = Join-Path $DataFolder "$modName.esm"
+        
+        if (Test-Path $espPath) {
+            $modFile = $espPath
+            $logBox.AppendText("Found ESP file: $espPath`r`n")
+        } elseif (Test-Path $esmPath) {
+            $modFile = $esmPath
+            $logBox.AppendText("Found ESM file: $esmPath`r`n")
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Cannot run dmmdeps: No corresponding .esp or .esm file found for achlist`r`n$InputPath`r`n`r`nExpected:`r`n$espPath`r`nor`r`n$esmPath", "Missing Mod File", 'OK', 'Error') | Out-Null
+            return $false
+        }
+    }
+    # If input is .esp or .esm, use it directly
+    elseif ($InputPath.ToLower().EndsWith(".esp") -or $InputPath.ToLower().EndsWith(".esm")) {
+        if (-not (Test-Path $InputPath)) {
+            [System.Windows.Forms.MessageBox]::Show("Input file not found:`r`n$InputPath", "Error", 'OK', 'Error') | Out-Null
+            return $false
+        }
+        $modFile = $InputPath
+        $logBox.AppendText("Using mod file directly: $modFile`r`n")
+    }
+    else {
+        [System.Windows.Forms.MessageBox]::Show("Cannot run dmmdeps: Input file must be .achlist, .esp, or .esm`r`n$InputPath", "Invalid Input", 'OK', 'Error') | Out-Null
+        return $false
+    }
+
+    $logBox.AppendText("=== Dmmdeps Generation ===`r`n")
+    $logBox.AppendText("Dmmdeps : $DmmdepsPath`r`n")
+    $logBox.AppendText("ModFile : $modFile`r`n")
+    $logBox.AppendText("Data    : $DataFolder`r`n")
+    $logBox.AppendText("-------------------------------------`r`n")
+
+    $achlistPath = Join-Path $DataFolder "$modName.achlist"
+    $csvPath = Join-Path $DataFolder "$($modName)_deps.csv"
+
+    try {
+        # Run dmmdeps to generate achlist and CSV
+        $logBox.AppendText("Running dmmdeps to generate achlist and CSV...`r`n")
+        
+        # Change to Data folder before running dmmdeps
+        $originalLocation = Get-Location
+        Push-Location -Path $DataFolder
+        
+        $dmmdepsArgs = @(
+            "`"$modFile`"",
+            "--quiet"
+        )
+        
+        $logBox.AppendText("Command: `"$DmmdepsPath`" $($dmmdepsArgs -join ' ')`r`n")
+        
+        $process = Start-Process -FilePath $DmmdepsPath -ArgumentList $dmmdepsArgs -Wait -PassThru -NoNewWindow
+        
+        Pop-Location
+        Set-Location $originalLocation
+        
+        if ($process.ExitCode -ne 0) {
+            $logBox.AppendText("ERROR: dmmdeps exited with code $($process.ExitCode)`r`n")
+            return $false
+        }
+        
+        # Check if files were generated
+        if (-not (Test-Path $achlistPath)) {
+            $logBox.AppendText("ERROR: achlist not generated at $achlistPath`r`n")
+            return $false
+        }
+        if (-not (Test-Path $csvPath)) {
+            $logBox.AppendText("ERROR: CSV not generated at $csvPath`r`n")
+            return $false
+        }
+        
+        $logBox.AppendText("Successfully generated:`r`n")
+        $logBox.AppendText("  achlist: $achlistPath`r`n")
+        $logBox.AppendText("  CSV    : $csvPath`r`n")
+        
+        return $true
+    }
+    catch {
+        Pop-Location
+        Set-Location $originalLocation
+        $logBox.AppendText("ERROR running dmmdeps: $($_.Exception.Message)`r`n")
+        return $false
+    }
+}
+
 function Invoke-Ba2Archives {
     param(
         [string]$AchlistPath,
@@ -615,8 +769,8 @@ function Invoke-Ba2Archives {
     $logBox.AppendText("SortAchlist   : $DoSort`r`n")
     $logBox.AppendText("-------------------------------------`r`n")
 
-    # Load achlist JSON
-    $rawJson  = Get-Content $AchlistPath -Raw
+    # Load achlist JSON (always use achlist for BA2 creation)
+    $rawJson = Get-Content $AchlistPath -Raw
     $jsonData = $rawJson | ConvertFrom-Json
 
     # Optional sort
@@ -836,6 +990,7 @@ function Write-AchlistProper {
 
 # Junction targets collected during backup for AF
 $script:junctionTargets = @{}
+$script:stopwatch = [System.Diagnostics.Stopwatch]::new()
 
 function Invoke-Backup {
     param(
@@ -1089,6 +1244,173 @@ function Invoke-Backup {
     }
 }  # <-- closes Invoke-Backup
 
+function Invoke-BackupFromCsv {
+    param(
+        [string]$InputPath,
+        [string]$BackupRoot,
+        [string]$DataRoot,
+        [string]$XboxRoot,
+        [string]$CsvPath,
+        [bool]$DoCopy,
+        [bool]$DoZip,
+        [bool]$DoClean
+    )
+
+    if (-not $DoCopy -and -not $DoZip -and -not $DoClean) { return }
+
+    if (-not (Test-Path $CsvPath)) {
+        $logBox.AppendText("CSV file not found: $CsvPath`r`n")
+        return
+    }
+
+    $modName = [System.IO.Path]::GetFileNameWithoutExtension($InputPath)
+    
+    $logBox.AppendText("=== Backup Management (CSV-based) ===`r`n")
+    $logBox.AppendText("Mod     : $modName`r`n")
+    $logBox.AppendText("CSV     : $CsvPath`r`n")
+    $logBox.AppendText("Backup  : $BackupRoot`r`n")
+    $logBox.AppendText("Data    : $DataRoot`r`n")
+    $logBox.AppendText("Xbox    : $XboxRoot`r`n")
+    $logBox.AppendText("-------------------------------------`r`n")
+
+    $modBackupRoot = Join-Path $BackupRoot $modName
+
+    # Clean everything except "backup" folder
+    if ($DoClean -and (Test-Path $modBackupRoot)) {
+        $logBox.AppendText("Clean copy enabled - removing all folders except 'backup' under:`r`n  $modBackupRoot`r`n")
+        Get-ChildItem -Path $modBackupRoot -Directory | Where-Object { $_.Name -ne "backup" } | ForEach-Object {
+            $logBox.AppendText("  REMOVE DIR: $($_.FullName)`r`n")
+            Remove-Item -Path $_.FullName -Recurse -Force
+        }
+    }
+
+    if ($DoCopy) {
+        # Copy base mod files (.esm/.esp/.ba2/.txt/.achlist)
+        $basePath = $DataRoot
+        Get-ChildItem -Path $basePath -Filter "$modName*" -Recurse -File |
+            Where-Object { $_.Extension -in '.esm', '.esp', '.ba2', '.txt', '.achlist' } |
+            ForEach-Object {
+                $src = $_.FullName
+                $dst = Join-Path $modBackupRoot $_.Name
+                New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+                Copy-Item -Path $src -Destination $dst -Force
+                $logBox.AppendText("COPY: $src => $dst`r`n")
+            }
+
+        # Process CSV file
+        try {
+            $csvData = Import-Csv -Path $CsvPath
+            $total = $csvData.Count
+            $progressBar.Maximum = [math]::Max(1, $total)
+            $progressBar.Value = 0
+            $script:junctionTargets = @{}
+            
+            $logBox.AppendText("CSV loaded successfully. Total rows: $total`r`n")
+            
+            # Debug: Show first few rows
+            if ($csvData.Count -gt 0) {
+                $firstRow = $csvData[0]
+                $logBox.AppendText("CSV columns: $($firstRow.PSObject.Properties.Name -join ', ')`r`n")
+                $logBox.AppendText("First row pcpath: '$($firstRow.pcpath)'`r`n")
+            }
+            
+            $count = 0
+            $copiedCount = 0
+            foreach ($row in $csvData) {
+                if ($row.pcpath -and $row.pcpath.Trim()) {
+                    $relPath = $row.pcpath.Trim()
+                    
+                    # Remove "Data\" prefix if it exists since DataRoot already ends with Data
+                    if ($relPath.StartsWith("Data\", [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $relPath = $relPath.Substring(5)  # Remove "Data\"
+                    }
+                    
+                    $srcPath = Join-Path $DataRoot $relPath
+                    $dstPC = Join-Path (Join-Path $modBackupRoot "LOOSEFILES\Data") $relPath
+                    
+                    $logBox.AppendText("CHECK [CSV Copy]: $srcPath`r`n")
+                    
+                    # Track ESM folder for AF junctions
+                    if ($relPath -match "\\$modName\.esm\\") {
+                        $fullFolder = Split-Path $srcPath -Parent
+                        if (-not $script:junctionTargets.ContainsKey($fullFolder)) {
+                            $script:junctionTargets[$fullFolder] = $true
+                        }
+                    }
+                    
+                    if (Test-Path $srcPath) {
+                        New-Item -ItemType Directory -Force -Path (Split-Path $dstPC) | Out-Null
+                        Copy-Item -Path $srcPath -Destination $dstPC -Force
+                        $logBox.AppendText("COPY: $srcPath => $dstPC`r`n")
+                        $copiedCount++
+                        
+                        # Handle Xbox version if applicable
+                        $relLower = $relPath.ToLowerInvariant()
+                        if ($relLower.EndsWith('.wem') -or ($relLower.EndsWith('.dds') -and $relLower.StartsWith('textures\\'))) {
+                            $srcXbox = Join-Path $XboxRoot $relPath
+                            $dstXbox = Join-Path (Join-Path $modBackupRoot "LOOSEFILES\XBOX\Data") $relPath
+                            
+                            if (Test-Path $srcXbox) {
+                                New-Item -ItemType Directory -Force -Path (Split-Path $dstXbox) | Out-Null
+                                Copy-Item -Path $srcXbox -Destination $dstXbox -Force
+                                $logBox.AppendText("COPY [Xbox]: $srcXbox => $dstXbox`r`n")
+                            }
+                        }
+                    } else {
+                        $logBox.AppendText("SKIP [File not found]: $srcPath`r`n")
+                    }
+                } else {
+                    $logBox.AppendText("SKIP [No pcpath]: Row $count has empty or missing pcpath`r`n")
+                }
+                
+                $count++
+                if ($count -le $progressBar.Maximum) {
+                    $progressBar.Value = $count
+                }
+            }
+            
+            $logBox.AppendText("CSV processing complete. Processed $count items, copied $copiedCount files.`r`n")
+        }
+        catch {
+            $logBox.AppendText("ERROR processing CSV: $($_.Exception.Message)`r`n")
+        }
+    }
+
+    # Zip creation (same as original function)
+    if ($DoZip) {
+        try {
+            $zipTime = Get-Date -Format "yyyyMMdd_HHmmss"
+            $zipTarget = Join-Path -Path $modBackupRoot -ChildPath "backup"
+            if (-not (Test-Path $zipTarget)) {
+                New-Item -ItemType Directory -Force -Path $zipTarget | Out-Null
+            }
+            $zipName = "$modName-$zipTime.zip"
+            $zipPath = Join-Path $zipTarget $zipName
+            $sourceFolder = $modBackupRoot
+
+            $logBox.AppendText("Creating zip:`r`n  Source: $sourceFolder`r`n  Dest  : $zipPath`r`n")
+
+            $excludeFolder = $zipTarget
+            New-ZipFromFolder -SourceFolder $sourceFolder `
+                              -ZipPath $zipPath `
+                              -LogBox $logBox `
+                              -ProgressBar $progressBar `
+                              -ExcludeFolder $excludeFolder
+
+            $logBox.AppendText("Zip created.`r`n")
+        }
+        catch {
+            $logBox.AppendText("ZIP ERROR: $($_.Exception.Message)`r`n")
+        }
+    }
+    
+    # Open the backup destination folder in Explorer
+    if (Test-Path $modBackupRoot) {
+        $logBox.AppendText("Opening backup folder in Explorer:`r`n  $modBackupRoot`r`n")
+        Start-Process "explorer.exe" -ArgumentList $modBackupRoot
+    }
+}
+
 # -------------------------------------------------------------------
 #  Make AF Version button (unchanged logic, but only after backup)
 # -------------------------------------------------------------------
@@ -1192,6 +1514,9 @@ $afButton.Add_Click({
 #  Run + Do All handlers
 # -------------------------------------------------------------------
 $runButton.Add_Click({
+    # Start stopwatch
+    $script:stopwatch.Restart()
+    
     $statusLabel.Text = ""
     $logBox.AppendText("=====================================`r`n")
     $logBox.AppendText("RUN started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`r`n")
@@ -1204,8 +1529,10 @@ $runButton.Add_Click({
         DataFolder       = $dataBox.Text
         XboxFolder       = $xboxBox.Text
         ArchiverPath     = $archiverBox.Text
+        DmmdepsPath      = $dmmdepsBox.Text
         VoiceFolderUpdate= $voiceUpdateCheckbox.Checked
         RebuildAchlist   = $rebuildAchlistCheckbox.Checked
+        UseDmmdeps       = $useDmmdepsCheckbox.Checked
         XboxArchive      = $xboxArchiveCheckbox.Checked
         WindowsArchive   = $windowsArchiveCheckbox.Checked
         SortAchlist      = $sortAchlistCheckbox.Checked
@@ -1222,10 +1549,11 @@ $runButton.Add_Click({
         return
     }
 
-    $dataRoot    = $dataBox.Text
-    $xboxRoot    = $xboxBox.Text
-    $backupRoot  = $destBox.Text
+    $dataRoot     = $dataBox.Text
+    $xboxRoot     = $xboxBox.Text
+    $backupRoot   = $destBox.Text
     $archiverPath = $archiverBox.Text
+    $dmmdepsPath  = $dmmdepsBox.Text
 
     $modName = [System.IO.Path]::GetFileNameWithoutExtension($inputPath)
     $achlistPath = if ($inputPath.ToLower().EndsWith(".achlist")) {
@@ -1233,14 +1561,27 @@ $runButton.Add_Click({
     } else {
         Join-Path $dataRoot "$modName.achlist"
     }
+    
+    $csvPath = Join-Path $dataRoot "$($modName)_deps.csv"
 
     $doVoice  = $voiceUpdateCheckbox.Checked -or $rebuildAchlistCheckbox.Checked
+    $doDmmdeps = $useDmmdepsCheckbox.Checked
     $doBa2    = $xboxArchiveCheckbox.Checked -or $windowsArchiveCheckbox.Checked -or $sortAchlistCheckbox.Checked
     $doBackup = $copyCheckbox.Checked -or $zipCheckbox.Checked -or $cleanCopyCheckbox.Checked
 
-    if (-not ($doVoice -or $doBa2 -or $doBackup)) {
+    if (-not ($doVoice -or $doDmmdeps -or $doBa2 -or $doBackup)) {
         [System.Windows.Forms.MessageBox]::Show("No operations are selected. Tick at least one checkbox.", "Nothing to do", 'OK', 'Information') | Out-Null
         return
+    }
+    
+    # Run dmmdeps first if selected
+    if ($doDmmdeps) {
+        $statusLabel.Text = "Running: Dmmdeps Generation..."
+        $dmmdepsSuccess = Invoke-DmmdepsGeneration -DmmdepsPath $dmmdepsPath -InputPath $inputPath -DataFolder $dataRoot
+        if (-not $dmmdepsSuccess) {
+            $logBox.AppendText("Dmmdeps generation failed. Stopping execution.`r`n")
+            return
+        }
     }
 
     if ($doVoice) {
@@ -1258,23 +1599,44 @@ $runButton.Add_Click({
 
     if ($doBackup) {
         $statusLabel.Text = "Running: Backup Management..."
-        Invoke-Backup -InputPath $inputPath -BackupRoot $backupRoot -DataRoot $dataRoot -XboxRoot $xboxRoot `
-            -DoCopy:$copyCheckbox.Checked -DoZip:$zipCheckbox.Checked -DoClean:$cleanCopyCheckbox.Checked
+        
+        # Handle CSV-based backup if dmmdeps was used
+        if ($useDmmdepsCheckbox.Checked -and (Test-Path $csvPath)) {
+            $logBox.AppendText("Using CSV-based backup. CSV path: $csvPath`r`n")
+            Invoke-BackupFromCsv -InputPath $inputPath -BackupRoot $backupRoot -DataRoot $dataRoot -XboxRoot $xboxRoot `
+                -CsvPath $csvPath -DoCopy:$copyCheckbox.Checked -DoZip:$zipCheckbox.Checked -DoClean:$cleanCopyCheckbox.Checked
+        } else {
+            if ($useDmmdepsCheckbox.Checked) {
+                $logBox.AppendText("Dmmdeps enabled but CSV not found at: $csvPath. Using traditional backup.`r`n")
+            } else {
+                $logBox.AppendText("Using traditional achlist-based backup.`r`n")
+            }
+            Invoke-Backup -InputPath $inputPath -BackupRoot $backupRoot -DataRoot $dataRoot -XboxRoot $xboxRoot `
+                -DoCopy:$copyCheckbox.Checked -DoZip:$zipCheckbox.Checked -DoClean:$cleanCopyCheckbox.Checked
+        }
 
         # Only after a backup in this session do we allow AF
         $afButton.Enabled = $true
-
-
     }
 
-    $statusLabel.Text = "Run completed."
-    $logBox.AppendText("RUN completed: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`r`n")
+    # Stop stopwatch and show total runtime
+    $script:stopwatch.Stop()
+    $runtime = $script:stopwatch.Elapsed
+    $runtimeText = if ($runtime.TotalMinutes -ge 1) {
+        "{0:mm\:ss\.ff}" -f $runtime
+    } else {
+        "{0:ss\.ff}" -f $runtime
+    }
+    
+    $statusLabel.Text = "Run completed. Total runtime: $runtimeText"
+    $logBox.AppendText("RUN completed: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - Total runtime: $runtimeText`r`n")
 })
 
 $doAllButton.Add_Click({
     # Just turn everything on; Run button actually executes
     $voiceUpdateCheckbox.Checked    = $true
     $rebuildAchlistCheckbox.Checked = $true
+    $useDmmdepsCheckbox.Checked     = $true
     $xboxArchiveCheckbox.Checked    = $true
     $windowsArchiveCheckbox.Checked = $true
     $sortAchlistCheckbox.Checked    = $true
