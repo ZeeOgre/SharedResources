@@ -1038,11 +1038,18 @@ function Invoke-Backup {
 
     # Clean everything except "backup" folder
     if ($DoClean -and (Test-Path $modBackupRoot)) {
-        $logBox.AppendText("Clean copy enabled - removing all folders except 'backup' under:`r`n  $modBackupRoot`r`n")
+        $logBox.AppendText("Clean copy enabled - removing all folders except 'backup' and all files in root under:`r`n  $modBackupRoot`r`n")
 
+        # Remove all directories except "backup"
         Get-ChildItem -Path $modBackupRoot -Directory | Where-Object { $_.Name -ne "backup" } | ForEach-Object {
             $logBox.AppendText("  REMOVE DIR: $($_.FullName)`r`n")
             Remove-Item -Path $_.FullName -Recurse -Force
+        }
+        
+        # Remove all files in the root directory
+        Get-ChildItem -Path $modBackupRoot -File | ForEach-Object {
+            $logBox.AppendText("  REMOVE FILE: $($_.FullName)`r`n")
+            Remove-Item -Path $_.FullName -Force
         }
     }
 
@@ -1064,13 +1071,10 @@ function Invoke-Backup {
         $progressBar.Maximum = [math]::Max(1, $total)
         $progressBar.Value = 0
         $script:junctionTargets = @{}
-        
-        # Track terrain chunks for TIF overlay copying
         $terrainChunks = @{}
-
         $count = 0
         foreach ($item in $jsonData) {
-            $item     = $item -replace '/', '\\'
+            $item     = $item -replace '/', '\'
             $relPath  = $item -replace '^DATA\\', ''
             $relLower = $relPath.ToLowerInvariant()
 
@@ -1277,17 +1281,41 @@ function Invoke-BackupFromCsv {
 
     # Clean everything except "backup" folder
     if ($DoClean -and (Test-Path $modBackupRoot)) {
-        $logBox.AppendText("Clean copy enabled - removing all folders except 'backup' under:`r`n  $modBackupRoot`r`n")
-        Get-ChildItem -Path $modBackupRoot -Directory | Where-Object { $_.Name -ne "backup" } | ForEach-Object {
+        $logBox.AppendText("Clean copy enabled - removing all folders except 'backup' and all files in root under:`r`n  $modBackupRoot`r`n")
+        
+        # Remove all directories except "backup"
+        Get-ChildItem -Path $modBackupRoot -Directory -Force | Where-Object { $_.Name -ne "backup" } | ForEach-Object {
             $logBox.AppendText("  REMOVE DIR: $($_.FullName)`r`n")
-            Remove-Item -Path $_.FullName -Recurse -Force
+            try {
+                Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction Stop
+                $logBox.AppendText("    SUCCESS: Directory removed`r`n")
+            } catch {
+                $logBox.AppendText("    ERROR: Failed to remove directory - $($_.Exception.Message)`r`n")
+            }
         }
+        
+        # Remove all files in the root directory (including hidden/system files)
+        Get-ChildItem -Path $modBackupRoot -File -Force | ForEach-Object {
+            $logBox.AppendText("  REMOVE FILE: $($_.FullName)`r`n")
+            try {
+                # Remove read-only attribute if present
+                if ($_.IsReadOnly) {
+                    $_.IsReadOnly = $false
+                }
+                Remove-Item -Path $_.FullName -Force -ErrorAction Stop
+                $logBox.AppendText("    SUCCESS: File removed`r`n")
+            } catch {
+                $logBox.AppendText("    ERROR: Failed to remove file - $($_.Exception.Message)`r`n")
+            }
+        }
+        
+        $logBox.AppendText("Cleanup completed.`r`n")
     }
 
     if ($DoCopy) {
         # Copy base mod files (.esm/.esp/.ba2/.txt/.achlist)
         $basePath = $DataRoot
-        Get-ChildItem -Path $basePath -Filter "$modName*" -Recurse -File |
+        Get-ChildItem -Path $basePath -Filter "$modName*" -File |
             Where-Object { $_.Extension -in '.esm', '.esp', '.ba2', '.txt', '.achlist' } |
             ForEach-Object {
                 $src = $_.FullName
@@ -1303,73 +1331,40 @@ function Invoke-BackupFromCsv {
             $total = $csvData.Count
             $progressBar.Maximum = [math]::Max(1, $total)
             $progressBar.Value = 0
-            $script:junctionTargets = @{}
-            
-            $logBox.AppendText("CSV loaded successfully. Total rows: $total`r`n")
-            
-            # Debug: Show first few rows
-            if ($csvData.Count -gt 0) {
-                $firstRow = $csvData[0]
-                $logBox.AppendText("CSV columns: $($firstRow.PSObject.Properties.Name -join ', ')`r`n")
-                $logBox.AppendText("First row pcpath: '$($firstRow.pcpath)'`r`n")
-            }
-            
             $count = 0
-            $copiedCount = 0
+            $copiedPC = 0
+            $copiedXbox = 0
+            $GameRoot = Split-Path $DataRoot -Parent
             foreach ($row in $csvData) {
+                # PC path copy
                 if ($row.pcpath -and $row.pcpath.Trim()) {
                     $relPath = $row.pcpath.Trim()
-                    
-                    # Remove "Data\" prefix if it exists since DataRoot already ends with Data
                     if ($relPath.StartsWith("Data\", [System.StringComparison]::OrdinalIgnoreCase)) {
-                        $relPath = $relPath.Substring(5)  # Remove "Data\"
+                        $relPath = $relPath.Substring(5)
                     }
-                    
                     $srcPath = Join-Path $DataRoot $relPath
                     $dstPC = Join-Path (Join-Path $modBackupRoot "LOOSEFILES\Data") $relPath
-                    
-                    $logBox.AppendText("CHECK [CSV Copy]: $srcPath`r`n")
-                    
-                    # Track ESM folder for AF junctions
-                    if ($relPath -match "\\$modName\.esm\\") {
-                        $fullFolder = Split-Path $srcPath -Parent
-                        if (-not $script:junctionTargets.ContainsKey($fullFolder)) {
-                            $script:junctionTargets[$fullFolder] = $true
-                        }
-                    }
-                    
-                    if (Test-Path $srcPath) {
-                        New-Item -ItemType Directory -Force -Path (Split-Path $dstPC) | Out-Null
-                        Copy-Item -Path $srcPath -Destination $dstPC -Force
-                        $logBox.AppendText("COPY: $srcPath => $dstPC`r`n")
-                        $copiedCount++
-                        
-                        # Handle Xbox version if applicable
-                        $relLower = $relPath.ToLowerInvariant()
-                        if ($relLower.EndsWith('.wem') -or ($relLower.EndsWith('.dds') -and $relLower.StartsWith('textures\\'))) {
-                            $srcXbox = Join-Path $XboxRoot $relPath
-                            $dstXbox = Join-Path (Join-Path $modBackupRoot "LOOSEFILES\XBOX\Data") $relPath
-                            
-                            if (Test-Path $srcXbox) {
-                                New-Item -ItemType Directory -Force -Path (Split-Path $dstXbox) | Out-Null
-                                Copy-Item -Path $srcXbox -Destination $dstXbox -Force
-                                $logBox.AppendText("COPY [Xbox]: $srcXbox => $dstXbox`r`n")
-                            }
-                        }
-                    } else {
-                        $logBox.AppendText("SKIP [File not found]: $srcPath`r`n")
-                    }
-                } else {
-                    $logBox.AppendText("SKIP [No pcpath]: Row $count has empty or missing pcpath`r`n")
+                    $logBox.AppendText("COPY [PC]: $srcPath => $dstPC`r`n")
+                    New-Item -ItemType Directory -Force -Path (Split-Path $dstPC) | Out-Null
+                    Copy-Item -Path $srcPath -Destination $dstPC -Force
+                    $copiedPC++
                 }
-                
+                # Xbox path copy
+                if ($row.xboxpath -and $row.xboxpath.Trim()) {
+                    $xboxPathRaw = $row.xboxpath.Trim()
+                    $srcXbox = Join-Path $GameRoot $xboxPathRaw
+                    $dstXbox = Join-Path (Join-Path $modBackupRoot "LOOSEFILES") $xboxPathRaw
+                    $logBox.AppendText("COPY [Xbox]: $srcXbox => $dstXbox`r`n")
+                    New-Item -ItemType Directory -Force -Path (Split-Path $dstXbox) | Out-Null
+                    Copy-Item -Path $srcXbox -Destination $dstXbox -Force
+                    $copiedXbox++
+                }
                 $count++
                 if ($count -le $progressBar.Maximum) {
                     $progressBar.Value = $count
                 }
             }
-            
-            $logBox.AppendText("CSV processing complete. Processed $count items, copied $copiedCount files.`r`n")
+            $logBox.AppendText("CSV processing complete. Processed $count items, copied $copiedPC PC files, $copiedXbox Xbox files.`r`n")
         }
         catch {
             $logBox.AppendText("ERROR processing CSV: $($_.Exception.Message)`r`n")
