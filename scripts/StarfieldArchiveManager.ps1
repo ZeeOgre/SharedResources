@@ -356,6 +356,14 @@ $useDmmdepsCheckbox.AutoSize = $true
 $useDmmdepsCheckbox.Checked = Get-Bool -Config $config -Key 'UseDmmdeps' -Default:$false
 $form.Controls.Add($useDmmdepsCheckbox)
 
+# Move Include Source Scripts checkbox up to same row as Use dmmdeps
+$includeSourceScriptsCheckbox = New-Object System.Windows.Forms.CheckBox
+$includeSourceScriptsCheckbox.Text = "Include Source Scripts (.psc) in PC Archive"
+$includeSourceScriptsCheckbox.Location = New-Object System.Drawing.Point(180, 270)  # <-- Same Y as useDmmdepsCheckbox
+$includeSourceScriptsCheckbox.AutoSize = $true
+$includeSourceScriptsCheckbox.Checked = Get-Bool -Config $config -Key 'IncludeSourceScripts' -Default:$false
+$form.Controls.Add($includeSourceScriptsCheckbox)
+
 # BA2 Archive Management
 $ba2Label = New-Object System.Windows.Forms.Label
 $ba2Label.Text = "BA2 Archive Management:"
@@ -729,6 +737,7 @@ function Invoke-DmmdepsGeneration {
     }
 }
 
+
 function Invoke-Ba2Archives {
     param(
         [string]$AchlistPath,
@@ -770,16 +779,55 @@ function Invoke-Ba2Archives {
     $logBox.AppendText("-------------------------------------`r`n")
 
     # Load achlist JSON (always use achlist for BA2 creation)
-    $rawJson = Get-Content $AchlistPath -Raw
+    $rawJson  = Get-Content $AchlistPath -Raw
     $jsonData = $rawJson | ConvertFrom-Json
-
-    # Optional sort
-    if ($DoSort -and $jsonData) {
-        $jsonData = $jsonData | Sort-Object
-        Write-AchlistProper -Items $jsonData -OutPath $AchlistPath
-        $logBox.AppendText("Achlist JSON sorted and saved.`r`n")
+    if ($null -eq $jsonData) {
+        $jsonData = @()
+    } elseif ($jsonData -isnot [System.Collections.IEnumerable] -or $jsonData -is [string]) {
+        $jsonData = @($jsonData)
     }
 
+    $achlistModified = $false
+
+    # Add .psc entries to achlist if checkbox is checked
+    if ($includeSourceScriptsCheckbox.Checked) {
+        $pscToAdd = @()
+
+        foreach ($item in $jsonData) {
+            # Match: Data\Scripts\...\Whatever.pex
+            if ($item -match '^Data\\Scripts\\(.+)\.pex$') {
+                $subPath    = $Matches[1]                         # CommunityShare\DebugMenuFramework\dmfMagicEffect
+                $pscRel     = "Scripts\Source\$subPath.psc"       # Scripts\Source\CommunityShare\...\dmfMagicEffect.psc
+                $pscFull    = Join-Path $DataFolder $pscRel
+                $pscAchlist = "Data\$pscRel"
+
+                if ((Test-Path $pscFull) -and
+                    ($jsonData -notcontains $pscAchlist) -and
+                    ($pscToAdd -notcontains $pscAchlist)) {
+
+                    $pscToAdd += $pscAchlist
+                    $logBox.AppendText("Include PSC in achlist: $pscAchlist`r`n")
+                }
+            }
+        }
+
+        if ($pscToAdd.Count -gt 0) {
+            $jsonData       += $pscToAdd
+            $achlistModified = $true
+        }
+    }
+
+    # Optional sort
+    if ($DoSort -and $jsonData.Count -gt 0) {
+        $jsonData        = $jsonData | Sort-Object
+        $achlistModified = $true
+    }
+
+    # Persist any changes (psc additions and/or sort)
+    if ($achlistModified) {
+        Write-AchlistProper -Items $jsonData -OutPath $AchlistPath
+        $logBox.AppendText("Achlist JSON updated and saved.`r`n")
+    }
 
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($AchlistPath)
 
@@ -798,32 +846,30 @@ function Invoke-Ba2Archives {
     $hasTextureFiles = $false
 
     foreach ($item in $jsonData) {
-        $p = $item -replace '/', '\'
+        $p   = $item -replace '/', '\'
         $ext = [System.IO.Path]::GetExtension($p).ToLowerInvariant()
 
         $isTexture = ($p -match '^DATA\\Textures') -and ($ext -eq '.dds')
         $isWem     = ($ext -eq '.wem')
+        $isPsc     = ($ext -eq '.psc')
 
         if ($isTexture) {
-            $hasTextureFiles = $true
-
-            # WINDOWS: use Data\Textures...
+            $hasTextureFiles      = $true
             $windowsTextureContent += $p
-
-            # XBOX: map DATA\Textures → <XboxDataPath>\Textures
-            $xboxTextureContent += ($p -replace '^DATA\\Textures', "$XboxDataPath\Textures")
+            $xboxTextureContent    += ($p -replace '^DATA\\Textures', "$XboxDataPath\Textures")
         }
         elseif ($isWem) {
-            $hasWemFiles = $true
-
-            # WINDOWS main uses Data\...
-            $windowsMainContent += $p
-
-            # XBOX: map DATA\... → <XboxDataPath>\...
-            $xboxMainContent += ($p -replace '^DATA', $XboxDataPath)
+            $hasWemFiles          = $true
+            $windowsMainContent   += $p
+            $xboxMainContent      += ($p -replace '^DATA', $XboxDataPath)
+        }
+        elseif ($isPsc) {
+            # Only include .psc in Windows (PC) archive and only if checkbox is on
+            if ($includeSourceScriptsCheckbox.Checked) {
+                $windowsMainContent += $p
+            }
         }
         else {
-            # All other types: use PC Data for BOTH Windows + Xbox archives
             $windowsMainContent += $p
             $xboxMainContent    += $p
         }
@@ -1487,22 +1533,16 @@ $afButton.Add_Click({
         }
     }
 
-    # 2a. Run XBoxArchivesFromAchlist.ps1 for AF achlist
-    $logBox.AppendText("Attempting to run: $PSScriptRoot\XBoxArchivesFromAchlist.ps1 $afAchlistPath`r`n")
-    Push-Location -Path (Split-Path $afAchlistPath)
-    & "$PSScriptRoot\XBoxArchivesFromAchlist.ps1" $afAchlistPath
-    Pop-Location
-
-    if ($LASTEXITCODE -ne 0) {
-        $logBox.AppendText("ERROR: Failed to run XBoxArchivesFromAchlist.ps1 on $afAchlistPath`r`n")
-        [System.Windows.Forms.MessageBox]::Show(
-            "Failed to run XBoxArchivesFromAchlist.ps1 on $afAchlistPath",
-            "Script Failure", "OK", "Error"
-        ) | Out-Null
-        return
-    }
-
-    $logBox.AppendText("AF archive script run completed (if no errors).`r`n")
+# 2a. Build BA2 archives for AF achlist using the integrated logic
+    $logBox.AppendText("Running BA2 archive creation for AF version...`r`n")
+    Invoke-Ba2Archives -AchlistPath $afAchlistPath `
+        -DataFolder  $dataBox.Text `
+        -XboxDataPath $xboxBox.Text `
+        -ArchiverPath $archiverBox.Text `
+        -DoXbox:$xboxArchiveCheckbox.Checked `
+        -DoWindows:$windowsArchiveCheckbox.Checked `
+        -DoSort:$sortAchlistCheckbox.Checked
+    $logBox.AppendText("AF BA2 archive creation complete.`r`n")
 })
 
 # -------------------------------------------------------------------
