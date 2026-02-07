@@ -1384,16 +1384,45 @@ function Invoke-BackupFromCsv {
             foreach ($row in $csvData) {
                 # PC path copy
                 if ($row.pcpath -and $row.pcpath.Trim()) {
-                    $relPath = $row.pcpath.Trim()
-                    if ($relPath.StartsWith("Data\", [System.StringComparison]::OrdinalIgnoreCase)) {
-                        $relPath = $relPath.Substring(5)
+                    $pcRaw = $row.pcpath.Trim()
+
+                    $srcPath = $null
+                    $dstPC   = $null
+
+                    # If dmmdeps provided a full absolute path (e.g. Source\TGATextures)
+                    if ($pcRaw -match '^[a-zA-Z]:\\' -or $pcRaw.StartsWith("\\")) {
+                        $srcPath = $pcRaw
+
+                        # Special handling for TGATextures assets: place under LOOSEFILES\TGATextures
+                        $lower  = $pcRaw.ToLowerInvariant()
+                        $marker = "\tgatextures\"
+                        $idx    = $lower.IndexOf($marker)
+                        if ($idx -ge 0) {
+                            $relUnderTga = $pcRaw.Substring($idx + $marker.Length)
+                            $dstRoot     = Join-Path $modBackupRoot "LOOSEFILES\TGATextures"
+                            $dstPC       = Join-Path $dstRoot $relUnderTga
+                        }
+                        else {
+                            # Absolute path without a TGATextures segment – log and skip to avoid bad copies
+                            $logBox.AppendText("SKIP [PC]: Absolute pcpath without TGATextures marker: $pcRaw`r`n")
+                        }
                     }
-                    $srcPath = Join-Path $DataRoot $relPath
-                    $dstPC = Join-Path (Join-Path $modBackupRoot "LOOSEFILES\Data") $relPath
-                    $logBox.AppendText("COPY [PC]: $srcPath => $dstPC`r`n")
-                    New-Item -ItemType Directory -Force -Path (Split-Path $dstPC) | Out-Null
-                    Copy-Item -Path $srcPath -Destination $dstPC -Force
-                    $copiedPC++
+                    else {
+                        # Original behavior for Data-relative or other relative paths
+                        $relPath = $pcRaw
+                        if ($relPath.StartsWith("Data\", [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $relPath = $relPath.Substring(5)
+                        }
+                        $srcPath = Join-Path $DataRoot $relPath
+                        $dstPC   = Join-Path (Join-Path $modBackupRoot "LOOSEFILES\Data") $relPath
+                    }
+
+                    if ($srcPath -and $dstPC) {
+                        $logBox.AppendText("COPY [PC]: $srcPath => $dstPC`r`n")
+                        New-Item -ItemType Directory -Force -Path (Split-Path $dstPC) | Out-Null
+                        Copy-Item -Path $srcPath -Destination $dstPC -Force
+                        $copiedPC++
+                    }
                 }
                 # Xbox path copy
                 if ($row.xboxpath -and $row.xboxpath.Trim()) {
