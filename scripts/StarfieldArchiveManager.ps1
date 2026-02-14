@@ -844,14 +844,20 @@ function Invoke-Ba2Archives {
 
     $hasWemFiles     = $false
     $hasTextureFiles = $false
+    $hasBtdFiles     = $false
 
     foreach ($item in $jsonData) {
-        $p   = $item -replace '/', '\'
+        $p   = $item -replace '/', '\\'
         $ext = [System.IO.Path]::GetExtension($p).ToLowerInvariant()
 
         $isTexture = ($p -match '^DATA\\Textures') -and ($ext -eq '.dds')
         $isWem     = ($ext -eq '.wem')
         $isPsc     = ($ext -eq '.psc')
+        $isBtd     = ($ext -eq '.btd')
+
+        if ($isBtd) {
+            $hasBtdFiles = $true
+        }
 
         if ($isTexture) {
             $hasTextureFiles      = $true
@@ -886,8 +892,8 @@ function Invoke-Ba2Archives {
 
     $logBox.AppendText("Windows and Xbox archive list files written.`r`n")
 
-    # Compression: if we have any wem at all, use None, else Default
-    $compressionType = if ($hasWemFiles) { "None" } else { "Default" }
+    # Compression: if we have any wem or btd at all, use None, else Default
+    $compressionType = if ($hasWemFiles -or $hasBtdFiles) { "None" } else { "Default" }
 
     # BA2 output names
     $xboxMainBa2        = "$DataFolder\$baseName - Main_xbox.ba2"
