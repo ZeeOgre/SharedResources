@@ -364,6 +364,14 @@ $includeSourceScriptsCheckbox.AutoSize = $true
 $includeSourceScriptsCheckbox.Checked = Get-Bool -Config $config -Key 'IncludeSourceScripts' -Default:$false
 $form.Controls.Add($includeSourceScriptsCheckbox)
 
+# SmartClobber option for dmmdeps
+$smartClobberCheckbox = New-Object System.Windows.Forms.CheckBox
+$smartClobberCheckbox.Text = "SmartClobber"
+$smartClobberCheckbox.Location = New-Object System.Drawing.Point(480, 270)
+$smartClobberCheckbox.AutoSize = $true
+$smartClobberCheckbox.Checked = Get-Bool -Config $config -Key 'SmartClobber' -Default:$false
+$form.Controls.Add($smartClobberCheckbox)
+
 # BA2 Archive Management
 $ba2Label = New-Object System.Windows.Forms.Label
 $ba2Label.Text = "BA2 Archive Management:"
@@ -630,7 +638,8 @@ function Invoke-DmmdepsGeneration {
     param(
         [string]$DmmdepsPath,
         [string]$InputPath,
-        [string]$DataFolder
+        [string]$DataFolder,
+        [bool]$SmartClobber
     )
 
     if (-not (Test-Path $DmmdepsPath)) {
@@ -700,6 +709,10 @@ function Invoke-DmmdepsGeneration {
             "`"$modFile`"",
             "--quiet"
         )
+
+        if ($SmartClobber) {
+            $dmmdepsArgs += "--Smartclobber"
+        }
         
         $logBox.AppendText("Command: `"$DmmdepsPath`" $($dmmdepsArgs -join ' ')`r`n")
         
@@ -845,6 +858,7 @@ function Invoke-Ba2Archives {
     $hasWemFiles     = $false
     $hasTextureFiles = $false
     $hasBtdFiles     = $false
+    $hasBk2Files     = $false
 
     foreach ($item in $jsonData) {
         $p   = $item -replace '/', '\\'
@@ -854,9 +868,13 @@ function Invoke-Ba2Archives {
         $isWem     = ($ext -eq '.wem')
         $isPsc     = ($ext -eq '.psc')
         $isBtd     = ($ext -eq '.btd')
+        $isBk2     = ($ext -eq '.bk2')
 
         if ($isBtd) {
             $hasBtdFiles = $true
+        }
+        elseif ($isBk2) {
+            $hasBk2Files = $true
         }
 
         if ($isTexture) {
@@ -892,8 +910,8 @@ function Invoke-Ba2Archives {
 
     $logBox.AppendText("Windows and Xbox archive list files written.`r`n")
 
-    # Compression: if we have any wem or btd at all, use None, else Default
-    $compressionType = if ($hasWemFiles -or $hasBtdFiles) { "None" } else { "Default" }
+    # Compression: if we have any wem, btd, or bk2 at all, use None, else Default
+    $compressionType = if ($hasWemFiles -or $hasBtdFiles -or $hasBk2Files) { "None" } else { "Default" }
 
     # BA2 output names
     $xboxMainBa2        = "$DataFolder\$baseName - Main_xbox.ba2"
@@ -1042,6 +1060,9 @@ function Write-AchlistProper {
 
 # Junction targets collected during backup for AF
 $script:junctionTargets = @{}
+$script:lastRunInputPath   = $null
+$script:lastRunModName     = $null
+$script:lastRunAchlistPath = $null
 $script:stopwatch = [System.Diagnostics.Stopwatch]::new()
 
 function Invoke-Backup {
@@ -1365,6 +1386,9 @@ function Invoke-BackupFromCsv {
     }
 
     if ($DoCopy) {
+        # Reset junction targets for this backup run so AF creation
+        # uses only folders discovered from the current CSV processing.
+        $script:junctionTargets = @{}
         # Copy base mod files (.esm/.esp/.ba2/.txt/.achlist)
         $basePath = $DataRoot
         Get-ChildItem -Path $basePath -Filter "$modName*" -File |
@@ -1428,6 +1452,23 @@ function Invoke-BackupFromCsv {
                         New-Item -ItemType Directory -Force -Path (Split-Path $dstPC) | Out-Null
                         Copy-Item -Path $srcPath -Destination $dstPC -Force
                         $copiedPC++
+
+                        # Track ESM folders for AF junction creation, mirroring
+                        # the achlist-based backup logic. We normalize the CSV
+                        # pcpath to a Data-relative form so we can detect
+                        # "\\<modName>.esm\\" segments.
+                        $achItem = $pcRaw.Replace('/', '\\')
+                        if (-not $achItem.StartsWith("Data\\", [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $achItem = "Data\\" + $achItem.TrimStart('\\')
+                        }
+
+                        if ($achItem -match "\\$modName\.esm\\") {
+                            $relFromData = $achItem -replace '^DATA\\', ''
+                            $fullFolder  = Split-Path (Join-Path $DataRoot $relFromData) -Parent
+                            if (-not $script:junctionTargets.ContainsKey($fullFolder)) {
+                                $script:junctionTargets[$fullFolder] = $true
+                            }
+                        }
                     }
                 }
                 # Xbox path copy
@@ -1488,18 +1529,56 @@ function Invoke-BackupFromCsv {
 }
 
 # -------------------------------------------------------------------
-#  Make AF Version button (unchanged logic, but only after backup)
+#  Make AF Version button (always normalize to use the achlist)
 # -------------------------------------------------------------------
 $afButton.Add_Click({
-    $originalAchlistPath = $inputBox.Text
-    if (-not $originalAchlistPath) {
+    # Input can be .achlist, .esm, .esp, or .ba2. For AF generation we
+    # *always* want to operate on the JSON achlist, not on the plugin
+    # bytes themselves.
+    $inputPath = if ($script:lastRunInputPath) { $script:lastRunInputPath } else { $inputBox.Text }
+    if (-not $inputPath) {
         $logBox.AppendText("ERROR: Input file is empty.`r`n")
         return
     }
 
-    $modName = [System.IO.Path]::GetFileNameWithoutExtension($originalAchlistPath)
+    $modName = if ($script:lastRunModName) { $script:lastRunModName } else { [System.IO.Path]::GetFileNameWithoutExtension($inputPath) }
     if ($modName -match '_AF$') {
         $logBox.AppendText("Already AF version, skipping AF generation.`r`n")
+        return
+    }
+
+    # Resolve the *source* achlist path. If the selected input is
+    # already an achlist, use it directly; otherwise look for
+    # <modName>.achlist under the configured Data folder.
+    $originalAchlistPath = $null
+    if ($script:lastRunAchlistPath -and (Test-Path $script:lastRunAchlistPath)) {
+        $originalAchlistPath = $script:lastRunAchlistPath
+    }
+    elseif ($inputPath.ToLower().EndsWith('.achlist')) {
+        $originalAchlistPath = $inputPath
+    }
+    else {
+        if (-not $dataBox.Text) {
+            $logBox.AppendText("ERROR: Data folder is not set; cannot locate original achlist for AF generation.`r`n")
+            [System.Windows.Forms.MessageBox]::Show(
+                "Data folder is not set; cannot locate <mod>.achlist for AF generation.",
+                "Missing Data Folder", "OK", "Error"
+            ) | Out-Null
+            return
+        }
+
+        $candidateAch = Join-Path $dataBox.Text ("{0}.achlist" -f $modName)
+        if (Test-Path $candidateAch) {
+            $originalAchlistPath = $candidateAch
+        }
+    }
+
+    if (-not $originalAchlistPath -or -not (Test-Path $originalAchlistPath)) {
+        $logBox.AppendText("ERROR: Could not find original achlist for AF generation.`r`n")
+        [System.Windows.Forms.MessageBox]::Show(
+            "Could not find the original .achlist for this mod. Select the .achlist as the input file or ensure it exists in the Data folder.",
+            "Missing Achlist", "OK", "Error"
+        ) | Out-Null
         return
     }
 
@@ -1508,76 +1587,101 @@ $afButton.Add_Click({
     $afAchlistPath = Join-Path $outputFolder "$afModName.achlist"
 
     # 1. Write AF achlist (modname.esm → modname_AF.esm)
-    (Get-Content $originalAchlistPath) -replace "$modName\.esm", "$afModName.esm" |
-        Set-Content -Path $afAchlistPath
+    $escapedModName = [Regex]::Escape($modName)
+    $rawAchlist = Get-Content -Path $originalAchlistPath -Raw
+    $rawAchlist = $rawAchlist -replace "${escapedModName}\.esm", "$afModName.esm"
+    $rawAchlist | Out-File -FilePath $afAchlistPath -Encoding ascii
     $logBox.AppendText("Wrote new AF achlist to $afAchlistPath`r`n")
 
     # Copy ESM/ESP to AF equivalents in same folder
     $originalEsm = Join-Path $outputFolder "$modName.esm"
     $afEsm = Join-Path $outputFolder "$afModName.esm"
     if (Test-Path $originalEsm) {
-        Copy-Item -Path $originalEsm -Destination $afEsm -Force
-        $logBox.AppendText("Copied ESM: $originalEsm => $afEsm`r`n")
+        try {
+            if (Test-Path $afEsm) {
+                Remove-Item -Path $afEsm -Force
+                $logBox.AppendText("Removed existing AF ESM: $afEsm`r`n")
+            }
+            #Copy-Item -Path $originalEsm -Destination $afEsm -Force
+            New-Item -Path $afEsm -ItemType HardLink -Value $originalEsm | Out-Null
+            $logBox.AppendText("Hardlinked ESM: $originalEsm => $afEsm`r`n")
+        }
+        catch {
+            $logBox.AppendText("ERROR: Failed to create AF ESM hardlink: $afEsm`r`n  $($_.Exception.Message)`r`n")
+            [System.Windows.Forms.MessageBox]::Show(
+                "Failed to create AF ESM hardlink:`r`n$afEsm`r`n`r`n$($_.Exception.Message)",
+                "AF Hardlink Failure", "OK", "Error"
+            ) | Out-Null
+            return
+        }
     }
 
     $originalEsp = Join-Path $outputFolder "$modName.esp"
     $afEsp = Join-Path $outputFolder "$afModName.esp"
     if (Test-Path $originalEsp) {
-        Copy-Item -Path $originalEsp -Destination $afEsp -Force
-        $logBox.AppendText("Copied ESP: $originalEsp => $afEsp`r`n")
-    }
-
-    # 2. Create junctions for any tracked esm folders
-    if ($script:junctionTargets.Count -eq 0) {
-        $logBox.AppendText("ERROR: No junction targets were found. AF junction creation skipped.`r`n")
-        [System.Windows.Forms.MessageBox]::Show(
-            "No junction targets were recorded during backup. Run backup first.",
-            "Junction Creation Failed", "OK", "Error"
-        ) | Out-Null
-        return
-    }
-
-    foreach ($target in $script:junctionTargets.Keys) {
-        $logBox.AppendText("CANDIDATE: $target`r`n")
-        if ($target.ToLower() -match "\\$($modName.ToLower())\.esm\\") {
-            $junctionName = $target -creplace "\\$([Regex]::Escape($modName)).esm\\", "\\${modName}_AF.esm\\"
-            $junctionName = $junctionName -replace '\\\\+', '\'
-            $target       = $target       -replace '\\\\+', '\'
-
-            $jpParent = Split-Path $junctionName -Parent
-            if (-not (Test-Path $jpParent)) {
-                New-Item -ItemType Directory -Force -Path $jpParent | Out-Null
-                $logBox.AppendText("CREATED PARENT DIR: $jpParent`r`n")
+        try {
+            if (Test-Path $afEsp) {
+                Remove-Item -Path $afEsp -Force
+                $logBox.AppendText("Removed existing AF ESP: $afEsp`r`n")
             }
+            #Copy-Item -Path $originalEsp -Destination $afEsp -Force
+            New-Item -Path $afEsp -ItemType HardLink -Value $originalEsp | Out-Null
+            $logBox.AppendText("Hardlinked ESP: $originalEsp => $afEsp`r`n")
+        }
+        catch {
+            $logBox.AppendText("ERROR: Failed to create AF ESP hardlink: $afEsp`r`n  $($_.Exception.Message)`r`n")
+            [System.Windows.Forms.MessageBox]::Show(
+                "Failed to create AF ESP hardlink:`r`n$afEsp`r`n`r`n$($_.Exception.Message)",
+                "AF Hardlink Failure", "OK", "Error"
+            ) | Out-Null
+            return
+        }
+    }
 
-            if (-not (Test-Path $junctionName)) {
-                $logBox.AppendText("RUN: mklink /J `"$junctionName`" `"$target`"`r`n")
-                cmd /c "mklink /J `"$junctionName`" `"$target`""
-                if ($LASTEXITCODE -ne 0) {
-                    $logBox.AppendText(" ERROR: Failed to create junction: $junctionName => $target`r`n")
-                    [System.Windows.Forms.MessageBox]::Show(
-                        "Failed to create junction:`r`n$junctionName`r`n`r`nTarget:`r`n$target",
-                        "mklink Failure", "OK", "Error"
-                    ) | Out-Null
-                    return
+    # 2. Create junctions for any tracked esm folders (optional).
+    # If no junction targets were recorded during backup, that's OK –
+    # we still keep the AF hardlink master files, we just skip
+    # directory junction creation.
+    if ($script:junctionTargets.Count -eq 0) {
+        $logBox.AppendText("No junction targets were found; skipping AF directory junction creation.`r`n")
+    }
+    else {
+        foreach ($target in $script:junctionTargets.Keys) {
+            $logBox.AppendText("CANDIDATE: $target`r`n")
+            if ($target.ToLower() -match "\\$($modName.ToLower())\.esm\\") {
+                $junctionName = $target -creplace "\\$([Regex]::Escape($modName)).esm\\", "\\${modName}_AF.esm\\"
+                $junctionName = $junctionName -replace '\\\\+', '\\'
+                $target       = $target       -replace '\\\\+', '\\'
+
+                $jpParent = Split-Path $junctionName -Parent
+                if (-not (Test-Path $jpParent)) {
+                    New-Item -ItemType Directory -Force -Path $jpParent | Out-Null
+                    $logBox.AppendText("CREATED PARENT DIR: $jpParent`r`n")
                 }
-                $logBox.AppendText("JUNCTION CREATED: $junctionName => $target`r`n")
-            } else {
-                $logBox.AppendText("SKIP: Junction already exists: $junctionName`r`n")
+
+                if (-not (Test-Path $junctionName)) {
+                    $logBox.AppendText("RUN: mklink /J `"$junctionName`" `"$target`"`r`n")
+                    cmd /c "mklink /J `"$junctionName`" `"$target`""
+                    if ($LASTEXITCODE -ne 0) {
+                        $logBox.AppendText(" ERROR: Failed to create junction: $junctionName => $target`r`n")
+                        [System.Windows.Forms.MessageBox]::Show(
+                            "Failed to create junction:`r`n$junctionName`r`n`r`nTarget:`r`n$target",
+                            "mklink Failure", "OK", "Error"
+                        ) | Out-Null
+                        return
+                    }
+                    $logBox.AppendText("JUNCTION CREATED: $junctionName => $target`r`n")
+                } else {
+                    $logBox.AppendText("SKIP: Junction already exists: $junctionName`r`n")
+                }
             }
         }
     }
 
-# 2a. Build BA2 archives for AF achlist using the integrated logic
-    $logBox.AppendText("Running BA2 archive creation for AF version...`r`n")
-    Invoke-Ba2Archives -AchlistPath $afAchlistPath `
-        -DataFolder  $dataBox.Text `
-        -XboxDataPath $xboxBox.Text `
-        -ArchiverPath $archiverBox.Text `
-        -DoXbox:$xboxArchiveCheckbox.Checked `
-        -DoWindows:$windowsArchiveCheckbox.Checked `
-        -DoSort:$sortAchlistCheckbox.Checked
-    $logBox.AppendText("AF BA2 archive creation complete.`r`n")
+    # 3. Run the normal pipeline using the AF achlist as the input
+    $logBox.AppendText("Running normal pipeline using AF achlist...`r`n")
+    $inputBox.Text = $afAchlistPath
+    $runButton.PerformClick()
 })
 
 # -------------------------------------------------------------------
@@ -1603,6 +1707,7 @@ $runButton.Add_Click({
         VoiceFolderUpdate= $voiceUpdateCheckbox.Checked
         RebuildAchlist   = $rebuildAchlistCheckbox.Checked
         UseDmmdeps       = $useDmmdepsCheckbox.Checked
+        SmartClobber     = $smartClobberCheckbox.Checked
         XboxArchive      = $xboxArchiveCheckbox.Checked
         WindowsArchive   = $windowsArchiveCheckbox.Checked
         SortAchlist      = $sortAchlistCheckbox.Checked
@@ -1631,6 +1736,11 @@ $runButton.Add_Click({
     } else {
         Join-Path $dataRoot "$modName.achlist"
     }
+
+    # Cache the last successful run inputs so AF creation can reuse them
+    $script:lastRunInputPath   = $inputPath
+    $script:lastRunModName     = $modName
+    $script:lastRunAchlistPath = $achlistPath
     
     $csvPath = Join-Path $dataRoot "$($modName)_deps.csv"
 
@@ -1647,7 +1757,7 @@ $runButton.Add_Click({
     # Run dmmdeps first if selected
     if ($doDmmdeps) {
         $statusLabel.Text = "Running: Dmmdeps Generation..."
-        $dmmdepsSuccess = Invoke-DmmdepsGeneration -DmmdepsPath $dmmdepsPath -InputPath $inputPath -DataFolder $dataRoot
+        $dmmdepsSuccess = Invoke-DmmdepsGeneration -DmmdepsPath $dmmdepsPath -InputPath $inputPath -DataFolder $dataRoot -SmartClobber:$smartClobberCheckbox.Checked
         if (-not $dmmdepsSuccess) {
             $logBox.AppendText("Dmmdeps generation failed. Stopping execution.`r`n")
             return
@@ -1707,6 +1817,7 @@ $doAllButton.Add_Click({
     $voiceUpdateCheckbox.Checked    = $true
     $rebuildAchlistCheckbox.Checked = $true
     $useDmmdepsCheckbox.Checked     = $true
+    $smartClobberCheckbox.Checked   = $true
     $xboxArchiveCheckbox.Checked    = $true
     $windowsArchiveCheckbox.Checked = $true
     $sortAchlistCheckbox.Checked    = $true
