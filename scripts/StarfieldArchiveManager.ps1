@@ -1588,9 +1588,25 @@ $afButton.Add_Click({
 
     # 1. Write AF achlist (modname.esm → modname_AF.esm)
     $escapedModName = [Regex]::Escape($modName)
+
     $rawAchlist = Get-Content -Path $originalAchlistPath -Raw
+
+    # Production rule: NO .esp references allowed in a production achlist
+    if ($rawAchlist -match '(?i)\.esp\b') {
+        $logBox.AppendText("ERROR: Achlist contains .esp references; production BA2 must be built from .esm only.`r`n")
+        [System.Windows.Forms.MessageBox]::Show(
+            "This achlist contains .esp references. Production BA2 builds must be based on .esm only.`r`n`r`nFix the source achlist, then re-run AF.",
+            "Invalid Achlist (.esp found)", "OK", "Error"
+        ) | Out-Null
+        return
+    }
+
+    # Replace ONLY .esm references for this mod
     $rawAchlist = $rawAchlist -replace "${escapedModName}\.esm", "$afModName.esm"
-    $rawAchlist | Out-File -FilePath $afAchlistPath -Encoding ascii
+
+    # Write JSON safely (don’t use ASCII)
+    Set-Content -Path $afAchlistPath -Value $rawAchlist -Encoding UTF8
+
     $logBox.AppendText("Wrote new AF achlist to $afAchlistPath`r`n")
 
     # Copy ESM/ESP to AF equivalents in same folder
