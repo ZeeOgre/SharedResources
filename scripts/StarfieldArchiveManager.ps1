@@ -980,22 +980,29 @@ function Invoke-Ba2Archives {
     $hasTextureFiles = $false
     $hasBtdFiles     = $false
     $hasBk2Files     = $false
+    $hasDlstringsFiles = $false
 
     foreach ($item in $jsonData) {
         $p   = $item -replace '/', '\\'
         $ext = [System.IO.Path]::GetExtension($p).ToLowerInvariant()
+        $leafName = [System.IO.Path]::GetFileName($p).ToLowerInvariant()
 
         $isTexture = ($p -match '^DATA\\Textures') -and ($ext -eq '.dds')
         $isWem     = ($ext -eq '.wem')
         $isPsc     = ($ext -eq '.psc')
         $isBtd     = ($ext -eq '.btd')
         $isBk2     = ($ext -eq '.bk2')
+        $isDlstrings = ($ext -eq '.dlstrings')
 
         if ($isBtd) {
             $hasBtdFiles = $true
         }
         elseif ($isBk2) {
             $hasBk2Files = $true
+        }
+
+        if ($isDlstrings) {
+            $hasDlstringsFiles = $true
         }
 
         if ($isTexture) {
@@ -1037,8 +1044,8 @@ function Invoke-Ba2Archives {
 
     $logBox.AppendText("Windows, Xbox, and PlayStation archive list files written.`r`n")
 
-    # Compression: if we have any wem, btd, or bk2 at all, use None, else Default
-    $compressionType = if ($hasWemFiles -or $hasBtdFiles -or $hasBk2Files) { "None" } else { "Default" }
+    # Compression: if we have any wem, *.dlstrings, btd, or bk2 at all, use None, else Default
+    $compressionType = if ($hasWemFiles -or $hasDlstringsFiles -or $hasBtdFiles -or $hasBk2Files) { "None" } else { "Default" }
 
     # BA2 output names
     $xboxMainBa2        = "$DataFolder\$baseName - Main_xbox.ba2"
@@ -1318,8 +1325,30 @@ function Invoke-Backup {
             $relPath  = $item -replace '^DATA\\', ''
             $relLower = $relPath.ToLowerInvariant()
 
-            $srcPath = Join-Path -Path $DataRoot -ChildPath $relPath
-            $dstPC   = Join-Path -Path (Join-Path $modBackupRoot "LOOSEFILES\Data") -ChildPath $relPath
+            # Absolute achlist entries still need a Data-relative destination layout.
+            if ($item -match '^[a-zA-Z]:\\' -or $item -match '^\\\\') {
+                $srcPath = $item
+
+                $dataMarker = "\data\"
+                $dataIndex = $item.ToLowerInvariant().IndexOf($dataMarker)
+                if ($dataIndex -ge 0) {
+                    $relPath = $item.Substring($dataIndex + $dataMarker.Length)
+                    $relLower = $relPath.ToLowerInvariant()
+                    $dstPC = Join-Path -Path (Join-Path $modBackupRoot "LOOSEFILES\Data") -ChildPath $relPath
+                }
+                else {
+                    $logBox.AppendText("SKIP [Main Copy]: Absolute path does not contain a Data root: $item`r`n")
+                    $count++
+                    if ($count -le $progressBar.Maximum) {
+                        $progressBar.Value = $count
+                    }
+                    continue
+                }
+            }
+            else {
+                $srcPath = Join-Path -Path $DataRoot -ChildPath $relPath
+                $dstPC   = Join-Path -Path (Join-Path $modBackupRoot "LOOSEFILES\Data") -ChildPath $relPath
+            }
 
             $logBox.AppendText("CHECK [Main Copy]: $srcPath`r`n")
 
