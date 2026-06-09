@@ -976,10 +976,10 @@ function Invoke-Ba2Archives {
     $windowsMainContent    = @()
     $windowsTextureContent = @()
 
-    $hasWemFiles     = $false
-    $hasTextureFiles = $false
-    $hasBtdFiles     = $false
-    $hasBk2Files     = $false
+    $hasWemFiles       = $false
+    $hasTextureFiles   = $false
+    $hasBtdFiles       = $false
+    $hasBnkFiles       = $false
     $hasDlstringsFiles = $false
 
     foreach ($item in $jsonData) {
@@ -987,18 +987,34 @@ function Invoke-Ba2Archives {
         $ext = [System.IO.Path]::GetExtension($p).ToLowerInvariant()
         $leafName = [System.IO.Path]::GetFileName($p).ToLowerInvariant()
 
+        if ($ext -eq '.bk2') {
+            $replacementPath = [System.IO.Path]::ChangeExtension($p, '.bnk')
+            $replacementFile = $replacementPath -replace '^DATA', $DataFolder
+
+            if (Test-Path $replacementFile) {
+                $logBox.AppendText("Replacing non-archivable BK2 with BNK in archive list: $p => $replacementPath`r`n")
+                $p = $replacementPath
+                $ext = '.bnk'
+                $leafName = [System.IO.Path]::GetFileName($p).ToLowerInvariant()
+            }
+            else {
+                $logBox.AppendText("Skipping BK2 with no matching BNK file: $p`r`n")
+                continue
+            }
+        }
+
         $isTexture = ($p -match '^DATA\\Textures') -and ($ext -eq '.dds')
         $isWem     = ($ext -eq '.wem')
         $isPsc     = ($ext -eq '.psc')
         $isBtd     = ($ext -eq '.btd')
-        $isBk2     = ($ext -eq '.bk2')
+        $isBnk     = ($ext -eq '.bnk')
         $isDlstrings = ($ext -eq '.dlstrings')
 
         if ($isBtd) {
             $hasBtdFiles = $true
         }
-        elseif ($isBk2) {
-            $hasBk2Files = $true
+        elseif ($isBnk) {
+            $hasBnkFiles = $true
         }
 
         if ($isDlstrings) {
@@ -1044,8 +1060,8 @@ function Invoke-Ba2Archives {
 
     $logBox.AppendText("Windows, Xbox, and PlayStation archive list files written.`r`n")
 
-    # Compression: if we have any wem, *.dlstrings, btd, or bk2 at all, use None, else Default
-    $compressionType = if ($hasWemFiles -or $hasDlstringsFiles -or $hasBtdFiles -or $hasBk2Files) { "None" } else { "Default" }
+    # Compression: if we have any wem, *.dlstrings, btd, or bnk at all, use None, else Default
+    $compressionType = if ($hasWemFiles -or $hasDlstringsFiles -or $hasBtdFiles -or $hasBnkFiles) { "None" } else { "Default" }
 
     # BA2 output names
     $xboxMainBa2        = "$DataFolder\$baseName - Main_xbox.ba2"
