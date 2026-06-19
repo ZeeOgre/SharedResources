@@ -599,26 +599,28 @@ function Normalize-ConsoleVoiceFolder {
     $hasEsm = Test-Path $esmVoiceFolder
     $hasEsp = Test-Path $espVoiceFolder
 
-    # Required behavior: if ESM exists, keep it; rename ESP only when ESM is missing.
-    if ($hasEsm) {
-        $LogBox.AppendText("KEEP [$PlatformLabel Voice]: ESM already exists:`r`n  $esmVoiceFolder`r`n")
-        if ($hasEsp) {
-            $LogBox.AppendText("NOTE [$PlatformLabel Voice]: ESP also exists; leaving ESP unchanged:`r`n  $espVoiceFolder`r`n")
+    # If no ESP exists, nothing to do
+    if (-not $hasEsp) {
+        if ($hasEsm) {
+            $LogBox.AppendText("KEEP [$PlatformLabel Voice]: ESM already exists, no ESP to process:`r`n  $esmVoiceFolder`r`n")
+        } else {
+            $LogBox.AppendText("SKIP [$PlatformLabel Voice Normalize]: No ESP or ESM voice folder found for mod '$ModName'.`r`n")
+            $LogBox.AppendText("  Checked ESM: $esmVoiceFolder`r`n")
+            $LogBox.AppendText("  Checked ESP: $espVoiceFolder`r`n")
         }
         return
     }
 
-    if ($hasEsp) {
-        $LogBox.AppendText("Renaming $PlatformLabel ESP voice folder to ESM:`r`n  $espVoiceFolder`r`n")
-        $newName = ("{0}.esm" -f $ModName)
-        Rename-Item -Path $espVoiceFolder -NewName $newName
-        $LogBox.AppendText("  =>  $esmVoiceFolder`r`n")
-        return
+    # ESP exists - delete ESM if present, then rename ESP to ESM
+    if ($hasEsm) {
+        $LogBox.AppendText("Deleting existing $PlatformLabel ESM voice folder:`r`n  $esmVoiceFolder`r`n")
+        Remove-Item -Path $esmVoiceFolder -Recurse -Force
     }
 
-    $LogBox.AppendText("SKIP [$PlatformLabel Voice Normalize]: No ESP or ESM voice folder found for mod '$ModName'.`r`n")
-    $LogBox.AppendText("  Checked ESM: $esmVoiceFolder`r`n")
-    $LogBox.AppendText("  Checked ESP: $espVoiceFolder`r`n")
+    $LogBox.AppendText("Renaming $PlatformLabel ESP voice folder to ESM:`r`n  $espVoiceFolder`r`n")
+    $newName = ("{0}.esm" -f $ModName)
+    Rename-Item -Path $espVoiceFolder -NewName $newName
+    $LogBox.AppendText("  =>  $esmVoiceFolder`r`n")
 }
 
 function Invoke-VoiceManagement {
@@ -748,7 +750,8 @@ function Invoke-DmmdepsGeneration {
         [string]$DmmdepsPath,
         [string]$InputPath,
         [string]$DataFolder,
-        [bool]$SmartClobber
+        [bool]$SmartClobber,
+        [bool]$IncludePsc
     )
 
     if (-not (Test-Path $DmmdepsPath)) {
@@ -821,6 +824,10 @@ function Invoke-DmmdepsGeneration {
 
         if ($SmartClobber) {
             $dmmdepsArgs += "--Smartclobber"
+        }
+
+        if ($IncludePsc) {
+            $dmmdepsArgs += "--include-psc"
         }
         
         $logBox.AppendText("Command: `"$DmmdepsPath`" $($dmmdepsArgs -join ' ')`r`n")
@@ -2086,6 +2093,7 @@ $runButton.Add_Click({
         VoiceFolderUpdate= $voiceUpdateCheckbox.Checked
         RebuildAchlist   = $rebuildAchlistCheckbox.Checked
         UseDmmdeps       = $useDmmdepsCheckbox.Checked
+        IncludeSourceScripts = $includeSourceScriptsCheckbox.Checked
         SmartClobber     = $smartClobberCheckbox.Checked
         XboxArchive      = $xboxArchiveCheckbox.Checked
         PlayStationArchive = $playStationArchiveCheckbox.Checked
@@ -2164,7 +2172,7 @@ $runButton.Add_Click({
     # Run dmmdeps first if selected
     if ($doDmmdeps) {
         $statusLabel.Text = "Running: Dmmdeps Generation..."
-        $dmmdepsSuccess = Invoke-DmmdepsGeneration -DmmdepsPath $dmmdepsPath -InputPath $inputPath -DataFolder $dataRoot -SmartClobber:$smartClobberCheckbox.Checked
+        $dmmdepsSuccess = Invoke-DmmdepsGeneration -DmmdepsPath $dmmdepsPath -InputPath $inputPath -DataFolder $dataRoot -SmartClobber:$smartClobberCheckbox.Checked -IncludePsc:$includeSourceScriptsCheckbox.Checked
         if (-not $dmmdepsSuccess) {
             $logBox.AppendText("Dmmdeps generation failed. Stopping execution.`r`n")
             return
