@@ -869,9 +869,7 @@ function Sync-AudacitySession {
         $matching = @($takes | Where-Object { $_.Name -ceq $savedTake })
         $regions = @($labels | Where-Object { $_.Text -ceq $file.BaseName })
         if ($matching.Count -ne 1 -or $regions.Count -ne 1 -or
-            $regions[0].End -le $regions[0].Start -or
-            $regions[0].Start -lt $matching[0].Start -or
-            $regions[0].End -gt $matching[0].End) { continue }
+            -not (Test-LabelWithinTake $regions[0] $matching[0])) { continue }
         $accepted[$file.Name] = $savedTake
         $receipt = $script:State.Exported[$file.Name]
         if (-not $receipt) { continue }
@@ -879,8 +877,8 @@ function Sync-AudacitySession {
             Get-SessionVoiceType
         )) $file.Name
         if ($receipt.Take -cne $savedTake -or $receipt.Path -ine $destination -or
-            [Math]::Abs([double]$receipt.Start - $regions[0].Start) -gt 0.000001 -or
-            [Math]::Abs([double]$receipt.End - $regions[0].End) -gt 0.000001 -or
+            [Math]::Abs([double]$receipt.Start - [Math]::Max($regions[0].Start, $matching[0].Start)) -gt 0.000001 -or
+            [Math]::Abs([double]$receipt.End - [Math]::Min($regions[0].End, $matching[0].End)) -gt 0.000001 -or
             -not $receipt.Hash -or -not (Test-Path -LiteralPath $destination -PathType Leaf)) { continue }
         try {
             $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256 -ErrorAction Stop).Hash
@@ -1044,8 +1042,7 @@ function Restore-ProjectSession {
         $matchesForLine = @($tracks | Where-Object {
             $_.Name.StartsWith('TAKE|' + $baseName + '|') -and
             $_.Channels -eq 2 -and $regions.Count -eq 1 -and
-            $regions[0].End -gt $regions[0].Start -and
-            $_.Start -le $regions[0].Start -and $_.End -ge $regions[0].End
+            (Test-LabelWithinTake $regions[0] $_)
         })
         if ($matchesForLine.Count -eq 1) {
             if (-not $accepted.ContainsKey($fileName)) {
@@ -2489,11 +2486,11 @@ function Export-SpeakerFolder {
             throw "Expected exactly one region label for $($file.Name)."
         }
 
-        $start = $matching[0].Start
-        $end = $matching[0].End
-        if ($end -le $start -or $start -lt $track.Start -or $end -gt $track.End) {
+        if (-not (Test-LabelWithinTake $matching[0] $track)) {
             throw "The label region for $($file.Name) extends outside its take."
         }
+        $start = [Math]::Max($matching[0].Start, $track.Start)
+        $end = [Math]::Min($matching[0].End, $track.End)
 
         Select-AudioTrack $track.Index $start $end
         $temporary = Join-Path $destination (
@@ -2537,6 +2534,19 @@ function Export-SpeakerFolder {
     Set-StatusMessage "Exported $exported WAVs; $transcriptsWritten with transcripts. Skipped $($script:State.Files.Count - $exported) unaccepted lines. $destination"
 }
 
+function Test-LabelWithinTake {
+    param($Region, $Take)
+
+    if ($Take.Channels -ne 2 -or $Take.End -le $Take.Start -or
+        $Region.End -le $Region.Start -or $Region.Start -ge $Take.End -or $Region.End -le $Take.Start) {
+        return $false
+    }
+    # Audacity's JSON transport reports times with six significant digits.
+    $magnitude = [Math]::Max(1.0, [Math]::Max([Math]::Abs($Take.Start), [Math]::Abs($Take.End)))
+    $tolerance = [Math]::Max(1.0 / 44100.0, [Math]::Pow(10.0, [Math]::Floor([Math]::Log10($magnitude)) - 5.0))
+    return ($Region.Start -ge $Take.Start - $tolerance -and $Region.End -le $Take.End + $tolerance)
+}
+
 function Assert-AudacitySession {
     if ($script:State.Files.Count -eq 0) { return }
     if ($script:State.TextSourceOnly) { Assert-TextProjectIdentity }
@@ -2563,8 +2573,7 @@ function Assert-AudacitySession {
             throw "The saved acceptance for '$baseName' has $($matching.Count) filename labels; expected one. Reconnect to reconcile the session, then use Review Take and explicitly accept the intended take again."
         }
         $track = Find-AudioTrack $script:State.Accepted[$fileName]
-        if ($track.Channels -ne 2 -or $matching[0].End -le $matching[0].Start -or
-            $matching[0].Start -lt $track.Start -or $matching[0].End -gt $track.End) {
+        if (-not (Test-LabelWithinTake $matching[0] $track)) {
             throw "The accepted region for $fileName is outside its stereo take."
         }
     }

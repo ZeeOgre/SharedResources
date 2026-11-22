@@ -98,6 +98,9 @@ imports original WAVs. The existing WAV-based script retains its normal behavior
   actual global index before naming it; selection alone does not control where
   Audacity's `AddLabel` writes. An unidentified label stops the save rather than
   renaming an existing region or metadata label.
+  Acceptance/export checks allow only the rounding precision of Audacity's
+  six-significant-digit JSON times. Export selections are clamped to the reported
+  take bounds; empty, disjoint or genuinely out-of-bounds labels still fail.
   More than 40 selected lines use recording
   blocks and `<script basename>_<voice type>_Block<N>.aup3` projects, preserving
   room for retakes within Audacity's scripting track limit.

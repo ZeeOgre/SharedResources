@@ -614,18 +614,24 @@ try {
         $script:DialogueRows = @([pscustomobject]@{FILENAME='line'; 'RESPONSE TEXT'='Exported transcript'})
         function Isolate-AudioTrack { param($Name) $script:MockTracks | Where-Object { $_.Name -ceq $Name } }
         function Get-AudacityLabels {
-            [pscustomobject]@{Text='line'; Start=2.0; End=3.0}
+            [pscustomobject]@{Text='line'; Start=2.0; End=3.000005}
             [pscustomobject]@{Text='second'; Start=6.0; End=7.0}
         }
-        function Select-AudioTrack {}
+        $script:ExportRegions = @()
+        function Select-AudioTrack {
+            param($Index, $Start, $End)
+            $script:ExportSelection = [pscustomobject]@{Start=$Start; End=$End}
+        }
         function Send-Audacity {
             param([string]$Command)
             if ($Command -match '^Export2: Filename="([^"]+)" NumChannels=2$') {
+                $script:ExportRegions += $script:ExportSelection
                 Copy-Item -LiteralPath $wavPath -Destination $matches[1]
             }
         }
         Export-SpeakerFolder
         $receipt = $script:State.Exported['line.wav']
+        Assert-Test ($script:ExportRegions[0].End -eq 3.0 -and $receipt.End -eq 3.0) 'Export did not clamp transport-rounded boundaries to the actual reported take.'
         Assert-Test ($receipt -and $receipt.Hash -ceq (Get-FileHash -LiteralPath $receipt.Path -Algorithm SHA256).Hash) 'Export receipt was not calculated after writing metadata.'
         Assert-Test ($script:State.Accepted.Count -eq 2 -and $script:State.Exported.Count -eq 2) 'Project export lost acceptance or omitted an accepted line.'
         $secondReceipt = $script:State.Exported['second.wav']
@@ -1048,6 +1054,20 @@ try {
         $rejected = $false
         try { Get-ProjectSessionData $script:ProjectTracks } catch { $rejected = $_.Exception.Message -like '*checksum*' }
         Assert-Test $rejected 'Corrupt session chunks were accepted.'
+    }
+
+    Invoke-TestCase 'Label boundaries tolerate transport rounding without accepting misplaced regions' {
+        $take = [pscustomobject]@{Channels=2; Start=38.49155901681427; End=44.55264706712873}
+        $region = [pscustomobject]@{Start=38.4916; End=44.5527}
+        Assert-Test (Test-LabelWithinTake $region $take) 'Observed six-digit transport rounding was treated as a displaced label.'
+        $region.End = 44.554
+        Assert-Test (-not (Test-LabelWithinTake $region $take)) 'A genuinely out-of-bounds label was accepted.'
+        $region.Start = 45.0
+        $region.End = 45.1
+        Assert-Test (-not (Test-LabelWithinTake $region $take)) 'A disjoint label was accepted.'
+        $region.Start = 39.0
+        $region.End = 39.0
+        Assert-Test (-not (Test-LabelWithinTake $region $take)) 'An empty label was accepted.'
     }
 
     Invoke-TestCase 'Oversized ASCII and UTF-8 commands never reach the pipe' {
