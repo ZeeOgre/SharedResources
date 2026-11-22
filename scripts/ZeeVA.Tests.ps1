@@ -950,6 +950,7 @@ try {
         $script:State.Source = Join-Path $testRoot 'BookkeepingVT'
         $script:State.Originals = @{}
         $script:State.Accepted = @{}
+        $script:State.Candidates = @{}
         $script:State.Candidate = $null
         $script:State.Index = $script:State.Files.Count - 1
         $script:DialogueRows = @($script:State.Files | ForEach-Object {
@@ -959,6 +960,73 @@ try {
         $snapshot = Get-ProjectSessionData $script:ProjectTracks
         Assert-Test ($snapshot.TextSourceOnly -and $snapshot.DialogueRows.Count -eq 301 -and $snapshot.VoiceType -ceq 'BookkeepingVT') 'Chunked bookkeeping lost text-only script data.'
         Assert-Test ($snapshot.CurrentFile -ceq 'DialogueLine00300.wav' -and $script:Commands[-1] -ceq 'SelectNone:') 'Saving on an unrecorded line required original audio or lost the current line.'
+        if ($SourceFile -eq 'ZeeVA_TextOnly.ps1') {
+            $baseline = @($script:ProjectTracks | Where-Object { $_.Name.StartsWith($script:SessionTrackPrefix) })[0]
+            $baselineIndex = [Array]::IndexOf($script:ProjectTracks, $baseline)
+            $baselineLabels = @($script:ProjectLabels | Where-Object Track -eq $baselineIndex)
+            $baselineText = $baselineLabels.Text -join '|'
+            $baselineCount = $baselineLabels.Count
+            $script:Commands.Clear()
+            Save-ProjectBookkeeping
+            Assert-Test (@($script:Commands | Where-Object { $_ -eq 'AddLabel:' -or $_ -eq 'RemoveTracks:' -or $_ -like 'SetLabel:*' }).Count -eq 0) 'Unchanged session rewrote metadata.'
+            $script:State.Index = 0
+            $script:State.Candidate = 'TAKE|line|one'
+            $script:State.Candidates['line.wav'] = $script:State.Candidate
+            $fullTracks = @($script:ProjectTracks)
+            while ($fullTracks.Count -le $script:AudacityMaxTrackIndex) {
+                $fullTracks += [pscustomobject]@{Name='Extra audio'; kind='wave'}
+            }
+            $payload = Read-SessionTrackPayload -Tracks $script:ProjectTracks -Metadata $baseline -Prefix $script:SessionTrackPrefix
+            $rejected = ''
+            try { Save-SessionCheckpoint -Tracks $fullTracks -Baseline $payload }
+            catch { $rejected = $_.Exception.Message }
+            Assert-Test ($rejected -like '*scripting track limit*' -and
+                @($script:Commands | Where-Object { $_ -eq 'NewLabelTrack:' }).Count -eq 0) 'Checkpoint exceeded the scripting track limit or modified an over-limit project.'
+            Save-ProjectBookkeeping
+            $checkpointLabels = @($script:ProjectLabels | Where-Object { $_.Track -ne $baselineIndex -and $_.Text -like 'ZeeVA Data|*' })
+            Assert-Test ($checkpointLabels.Count -lt $baselineCount) 'Stopping-sized progress data was not smaller than the dialogue payload.'
+            Assert-Test ((@($script:ProjectLabels | Where-Object Track -eq $baselineIndex).Text -join '|') -ceq $baselineText) 'Progress save rewrote the dialogue baseline.'
+            $snapshot = Get-ProjectSessionData $script:ProjectTracks
+            Assert-Test ($snapshot.Candidate -ceq 'TAKE|line|one' -and $snapshot.DialogueRows.Count -eq 301) 'Progress checkpoint lost the candidate or dialogue on recovery.'
+            $script:Commands.Clear()
+            Save-ProjectBookkeeping
+            Assert-Test (@($script:Commands | Where-Object { $_ -eq 'AddLabel:' -or $_ -eq 'RemoveTracks:' -or $_ -like 'SetLabel:*' }).Count -eq 0) 'Identical progress checkpoint was rewritten.'
+            $script:State.Accepted['line.wav'] = $script:State.Candidate
+            $script:State.Candidate = $null
+            $script:State.Index = 1
+            $script:State.OutputRoot = Join-Path $testRoot 'NewOutput'
+            $script:State.Exported['line.wav'] = [pscustomobject]@{Take='TAKE|line|one'; Hash='receipt'}
+            Save-ProjectBookkeeping
+            $snapshot = Get-ProjectSessionData $script:ProjectTracks
+            Assert-Test ($snapshot.CurrentFile -ceq 'DialogueLine00001.wav' -and $snapshot.Accepted.'line.wav' -ceq 'TAKE|line|one' -and
+                $snapshot.OutputRoot -ceq $script:State.OutputRoot -and $snapshot.Exported.'line.wav'.Hash -ceq 'receipt') 'Checkpoint did not restore advancement, acceptance, output path or export receipts.'
+            Assert-Test ((@($script:ProjectLabels | Where-Object Track -eq $baselineIndex).Text -join '|') -ceq $baselineText) 'Acceptance rewrote unchanged dialogue.'
+            $wrongCheckpoint = (Get-SessionTrackName -CheckpointHash ('A' * 64)).Substring($script:SessionTrackPrefix.Length)
+            $wrongTracks = @($script:ProjectTracks | ForEach-Object {
+                if ($_.Name.StartsWith('ZeeVA Progress|')) { [pscustomobject]@{Name=('ZeeVA Progress|' + $wrongCheckpoint)} }
+                else { $_ }
+            })
+            $rejected = ''
+            try {
+                Get-ProjectSessionData $wrongTracks
+            } catch { $rejected = $_.Exception.Message }
+            Assert-Test ($rejected -like '*does not match this session*') 'Progress from a different baseline was accepted.'
+            $checkpointTrack = @($script:ProjectTracks | Where-Object { $_.Name.StartsWith('ZeeVA Progress|') })[0]
+            $checkpointIndex = [Array]::IndexOf($script:ProjectTracks, $checkpointTrack)
+            $label = @($script:ProjectLabels | Where-Object Track -eq $checkpointIndex)[0]
+            $originalText = $label.Text
+            $label.Text += 'A'
+            $rejected = ''
+            try { Get-ProjectSessionData $script:ProjectTracks } catch { $rejected = $_.Exception.Message }
+            Assert-Test ($rejected -like '*checksum*') 'Corrupt progress was accepted.'
+            $label.Text = $originalText
+            $script:DialogueRows[0].'RESPONSE TEXT' = 'Updated dialogue'
+            Save-ProjectBookkeeping
+            $snapshot = Get-ProjectSessionData $script:ProjectTracks
+            Assert-Test ($snapshot.DialogueRows[0].'RESPONSE TEXT' -ceq 'Updated dialogue' -and
+                $snapshot.Accepted.'line.wav' -ceq 'TAKE|line|one' -and
+                @($script:ProjectTracks | Where-Object { $_.Name.StartsWith('ZeeVA Progress|') }).Count -eq 0) 'Changed dialogue did not rebuild the baseline and remove the obsolete checkpoint.'
+        }
         foreach ($command in $script:Commands) {
             Assert-Test ([Text.Encoding]::UTF8.GetByteCount($command + "`r`n") -lt 1024) 'Text-only script data exceeded the Audacity command size limit.'
         }

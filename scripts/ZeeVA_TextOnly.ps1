@@ -645,6 +645,8 @@ function Save-SessionSettings {
 }
 
 function Get-SessionTrackName {
+    param([string]$CheckpointHash = '')
+
     $snapshot = [ordered]@{
         Version = 1
         Source = $script:State.Source
@@ -667,6 +669,18 @@ function Get-SessionTrackName {
             ([IO.Path]::GetFileNameWithoutExtension([string]$_.FILENAME) + '.wav') -in $fileNames
         })
     }
+    if ($CheckpointHash) {
+        $snapshot = [ordered]@{
+            Version = 1
+            CheckpointHash = $CheckpointHash
+            OutputRoot = $script:State.OutputRoot
+            CurrentFile = (Get-CurrentFile).Name
+            Accepted = $script:State.Accepted
+            Exported = $script:State.Exported
+            Candidate = $script:State.Candidate
+            Candidates = $script:State.Candidates
+        }
+    }
     $json = $snapshot | ConvertTo-Json -Depth 5 -Compress
     $bytes = [Text.Encoding]::UTF8.GetBytes($json)
     $buffer = [IO.MemoryStream]::new()
@@ -679,6 +693,62 @@ function Get-SessionTrackName {
     finally { $buffer.Dispose() }
 }
 
+function Read-SessionTrackPayload {
+    param([object[]]$Tracks, $Metadata, [string]$Prefix)
+
+    $encoded = ([string]$Metadata.name).Substring($Prefix.Length)
+    if ($encoded.StartsWith('v2|')) {
+        if ($encoded -notmatch '^v2\|([1-9][0-9]*)\|([A-F0-9]{64})$') {
+            throw 'Invalid session chunk manifest.'
+        }
+        $chunkCount = [int]$matches[1]
+        $expectedHash = $matches[2]
+        $metadataIndex = [Array]::IndexOf($Tracks, $Metadata)
+        $labels = @(Get-AudacityLabels | Where-Object { $_.Track -eq $metadataIndex })
+        if ($labels.Count -ne $chunkCount) { throw 'Session chunks are missing or duplicated.' }
+        $chunks = @{}
+        foreach ($label in $labels) {
+            if ($label.Text -notmatch '^ZeeVA Data\|([0-9]+)\|([A-Za-z0-9+/=]+)$') {
+                throw 'Invalid session chunk.'
+            }
+            $chunkIndex = [int]$matches[1]
+            if ($chunkIndex -ge $chunkCount -or $chunks.ContainsKey($chunkIndex)) {
+                throw 'Session chunk indices are invalid or duplicated.'
+            }
+            $chunks[$chunkIndex] = $matches[2]
+        }
+        $encoded = -join @(for ($chunkIndex = 0; $chunkIndex -lt $chunkCount; $chunkIndex++) {
+            $chunks[$chunkIndex]
+        })
+        if ((Get-SessionPayloadHash $encoded) -cne $expectedHash) {
+            throw 'The session chunk checksum does not match.'
+        }
+    }
+    return $encoded
+}
+
+function ConvertFrom-SessionPayload {
+    param([string]$Encoded)
+
+    $bytes = [Convert]::FromBase64String($Encoded)
+    # Older projects store plain UTF-8 JSON; new payloads have a gzip header.
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0x1F -and $bytes[1] -eq 0x8B) {
+        $inputBuffer = [IO.MemoryStream]::new($bytes, $false)
+        $outputBuffer = [IO.MemoryStream]::new()
+        try {
+            $gzip = [IO.Compression.GZipStream]::new($inputBuffer, [IO.Compression.CompressionMode]::Decompress, $true)
+            try { $gzip.CopyTo($outputBuffer) }
+            finally { $gzip.Dispose() }
+            $bytes = $outputBuffer.ToArray()
+        }
+        finally {
+            $inputBuffer.Dispose()
+            $outputBuffer.Dispose()
+        }
+    }
+    [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json -ErrorAction Stop
+}
+
 function Get-ProjectSessionData {
     param([object[]]$Tracks)
 
@@ -688,55 +758,28 @@ function Get-ProjectSessionData {
     if ($metadata.Count -eq 0) { return $null }
     if ($metadata.Count -ne 1) { throw 'The project contains multiple ZeeVA session tracks.' }
     try {
-        $encoded = ([string]$metadata[0].name).Substring($script:SessionTrackPrefix.Length)
-        if ($encoded.StartsWith('v2|')) {
-            if ($encoded -notmatch '^v2\|([1-9][0-9]*)\|([A-F0-9]{64})$') {
-                throw 'Invalid session chunk manifest.'
-            }
-            $chunkCount = [int]$matches[1]
-            $expectedHash = $matches[2]
-            $metadataIndex = [Array]::IndexOf($Tracks, $metadata[0])
-            $labels = @(Get-AudacityLabels | Where-Object { $_.Track -eq $metadataIndex })
-            if ($labels.Count -ne $chunkCount) { throw 'Session chunks are missing or duplicated.' }
-            $chunks = @{}
-            foreach ($label in $labels) {
-                if ($label.Text -notmatch '^ZeeVA Data\|([0-9]+)\|([A-Za-z0-9+/=]+)$') {
-                    throw 'Invalid session chunk.'
-                }
-                $chunkIndex = [int]$matches[1]
-                if ($chunkIndex -ge $chunkCount -or $chunks.ContainsKey($chunkIndex)) {
-                    throw 'Session chunk indices are invalid or duplicated.'
-                }
-                $chunks[$chunkIndex] = $matches[2]
-            }
-            $encoded = -join @(for ($chunkIndex = 0; $chunkIndex -lt $chunkCount; $chunkIndex++) {
-                $chunks[$chunkIndex]
-            })
-            if ((Get-SessionPayloadHash $encoded) -cne $expectedHash) {
-                throw 'The session chunk checksum does not match.'
-            }
-        }
-        $bytes = [Convert]::FromBase64String($encoded)
-        # Older projects store plain UTF-8 JSON; new payloads have a gzip header.
-        if ($bytes.Length -ge 2 -and $bytes[0] -eq 0x1F -and $bytes[1] -eq 0x8B) {
-            $inputBuffer = [IO.MemoryStream]::new($bytes, $false)
-            $outputBuffer = [IO.MemoryStream]::new()
-            try {
-                $gzip = [IO.Compression.GZipStream]::new($inputBuffer, [IO.Compression.CompressionMode]::Decompress, $true)
-                try { $gzip.CopyTo($outputBuffer) }
-                finally { $gzip.Dispose() }
-                $bytes = $outputBuffer.ToArray()
-            }
-            finally {
-                $inputBuffer.Dispose()
-                $outputBuffer.Dispose()
-            }
-        }
-        $snapshot = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json -ErrorAction Stop
+        $encoded = Read-SessionTrackPayload -Tracks $Tracks -Metadata $metadata[0] -Prefix $script:SessionTrackPrefix
+        $snapshot = ConvertFrom-SessionPayload $encoded
         if ($snapshot.Version -ne 1 -or -not $snapshot.Source -or
             -not $snapshot.OutputRoot -or @($snapshot.Files).Count -eq 0 -or
             -not $snapshot.CurrentFile -or -not $snapshot.Originals) {
             throw 'Missing or unsupported session fields.'
+        }
+        $checkpoints = @($Tracks | Where-Object { ([string]$_.name).StartsWith('ZeeVA Progress|') })
+        if ($checkpoints.Count -gt 1) { throw 'The project contains multiple ZeeVA progress tracks.' }
+        if ($checkpoints.Count -eq 1) {
+            $payload = Read-SessionTrackPayload -Tracks $Tracks -Metadata $checkpoints[0] -Prefix 'ZeeVA Progress|'
+            $checkpoint = ConvertFrom-SessionPayload $payload
+            if ($checkpoint.Version -ne 1 -or $checkpoint.CheckpointHash -cne (Get-SessionPayloadHash $encoded)) {
+                throw 'The progress checkpoint does not match this session.'
+            }
+            foreach ($property in @('OutputRoot', 'CurrentFile', 'Accepted', 'Exported', 'Candidate', 'Candidates')) {
+                if (-not $checkpoint.PSObject.Properties[$property]) { throw "Missing checkpoint field: $property" }
+                $snapshot | Add-Member -MemberType NoteProperty -Name $property -Value $checkpoint.$property -Force
+            }
+            if (-not $snapshot.OutputRoot -or $snapshot.CurrentFile -cnotin $snapshot.Files) {
+                throw 'Invalid checkpoint output folder or current line.'
+            }
         }
         return $snapshot
     }
@@ -770,11 +813,77 @@ function Set-ProjectProgress {
     }
 }
 
+function Save-SessionCheckpoint {
+    param([object[]]$Tracks, [string]$Baseline)
+
+    $prefix = 'ZeeVA Progress|'
+    $checkpoints = @($Tracks | Where-Object { ([string]$_.name).StartsWith($prefix) })
+    if ($checkpoints.Count -gt 1) { throw 'The project contains multiple ZeeVA progress tracks.' }
+    $encoded = (Get-SessionTrackName -CheckpointHash (Get-SessionPayloadHash $Baseline)).Substring($script:SessionTrackPrefix.Length)
+    $chunks = @(
+        for ($offset = 0; $offset -lt $encoded.Length; $offset += 512) {
+            $encoded.Substring($offset, [Math]::Min(512, $encoded.Length - $offset))
+        }
+    )
+    $manifest = '{0}v2|{1}|{2}' -f $prefix, $chunks.Count, (Get-SessionPayloadHash $encoded)
+    if ($checkpoints.Count -eq 1) {
+        $existing = Read-SessionTrackPayload -Tracks $Tracks -Metadata $checkpoints[0] -Prefix $prefix
+        if ($existing -ceq $encoded) { return }
+        if ($checkpoints[0].kind -cne 'label') { throw 'The ZeeVA progress track must be a label track.' }
+    } else {
+        $saved = ConvertFrom-SessionPayload $Baseline
+        $current = ConvertFrom-SessionPayload $encoded
+        $unchanged = $true
+        foreach ($property in @('OutputRoot', 'CurrentFile', 'Accepted', 'Exported', 'Candidate', 'Candidates')) {
+            if ((ConvertTo-Json -InputObject $saved.$property -Depth 5 -Compress) -cne
+                (ConvertTo-Json -InputObject $current.$property -Depth 5 -Compress)) {
+                $unchanged = $false
+                break
+            }
+        }
+        if ($unchanged) { return }
+        if ($Tracks.Count -gt $script:AudacityMaxTrackIndex) {
+            throw 'No room for a recovery checkpoint within the Audacity scripting track limit.'
+        }
+    }
+    $labelIndex = @(Get-AudacityLabels).Count
+    Send-Audacity 'SelectNone:'
+    if ($checkpoints.Count -eq 1) {
+        $index = [Array]::IndexOf($Tracks, $checkpoints[0])
+        $labelIndex -= @(Get-AudacityLabels | Where-Object { $_.Track -eq $index }).Count
+        Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f $index)
+        Send-Audacity 'RemoveTracks:'
+    }
+    $index = $Tracks.Count - $checkpoints.Count
+    Send-Audacity 'NewLabelTrack:'
+    Set-ProjectProgress ('Saving progress - 0/{0} labels' -f $chunks.Count)
+    for ($chunkIndex = 0; $chunkIndex -lt $chunks.Count; $chunkIndex++) {
+        $time = Format-Time ($chunkIndex / 1000.0)
+        Send-Audacity ('Select: Track={0} TrackCount=1 Start={1} End={1}' -f $index, $time)
+        Send-Audacity 'AddLabel:'
+        Send-Audacity ('SetLabel: Label={0} Text={1}' -f ($labelIndex + $chunkIndex),
+            (Quote-Audacity ('ZeeVA Data|{0}|{1}' -f $chunkIndex, $chunks[$chunkIndex])))
+        Set-ProjectProgress ('Saving progress - {0}/{1} labels' -f ($chunkIndex + 1), $chunks.Count)
+    }
+    Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f $index)
+    Send-Audacity ('SetTrackStatus: Name=' + (Quote-Audacity $manifest))
+}
+
+function Restore-SessionSelection {
+    Send-Audacity 'SelectNone:'
+    $file = Get-CurrentFile
+    $name = $script:State.Candidate
+    if (-not $name) { $name = $script:State.Accepted[$file.Name] }
+    if (-not $name) { $name = $script:State.Originals[$file.Name] }
+    if (-not $name -and $script:State.TextSourceOnly) { return }
+    $track = Find-AudioTrack $name
+    Select-AudioTrack $track.Index $track.Start $track.End
+}
+
 function Save-ProjectBookkeeping {
     $null = Get-CurrentFile
     $previousProgress = $script:State.ProjectProgress
     try {
-        Set-ProjectProgress 'Preparing project...'
         [object[]]$tracks = (Invoke-Audacity 'GetInfo: Type=Tracks Format=JSON') | ConvertFrom-Json
         $metadataIndices = @(
             for ($trackIndex = 0; $trackIndex -lt $tracks.Count; $trackIndex++) {
@@ -784,6 +893,7 @@ function Save-ProjectBookkeeping {
             }
         )
         if ($metadataIndices.Count -gt 1) { throw 'The project contains multiple ZeeVA session tracks.' }
+        $filenameLabels = @()
         if ($metadataIndices.Count -eq 1) {
             $filenameLabels = @(Get-AudacityLabels | Where-Object {
                 $_.Track -eq $metadataIndices[0] -and
@@ -809,6 +919,38 @@ function Save-ProjectBookkeeping {
             }
         }
         $encoded = (Get-SessionTrackName).Substring($script:SessionTrackPrefix.Length)
+        if ($metadataIndices.Count -eq 1 -and -not $filenameLabels.Count) {
+            $baseline = Read-SessionTrackPayload -Tracks $tracks -Metadata $tracks[$metadataIndices[0]] -Prefix $script:SessionTrackPrefix
+            $saved = ConvertFrom-SessionPayload $baseline
+            $current = ConvertFrom-SessionPayload $encoded
+            $sameSession = $true
+            foreach ($property in @('Version', 'Source', 'Files', 'Originals', 'TextSourceOnly', 'VoiceType', 'DialogueExportPath', 'DialogueRows')) {
+                if ((ConvertTo-Json -InputObject $saved.$property -Depth 5 -Compress) -cne
+                    (ConvertTo-Json -InputObject $current.$property -Depth 5 -Compress)) {
+                    $sameSession = $false
+                    break
+                }
+            }
+            if ($sameSession) {
+                Save-SessionCheckpoint -Tracks $tracks -Baseline $baseline
+                Restore-SessionSelection
+                return
+            }
+        }
+        $checkpoints = @($tracks | Where-Object { ([string]$_.name).StartsWith('ZeeVA Progress|') })
+        if ($checkpoints.Count -gt 1) { throw 'The project contains multiple ZeeVA progress tracks.' }
+        if ($checkpoints.Count -eq 1) {
+            if ($checkpoints[0].kind -cne 'label') { throw 'The ZeeVA progress track must be a label track.' }
+            Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f ([Array]::IndexOf($tracks, $checkpoints[0])))
+            Send-Audacity 'RemoveTracks:'
+            $tracks = (Invoke-Audacity 'GetInfo: Type=Tracks Format=JSON') | ConvertFrom-Json
+            $metadataIndices = @(
+                for ($index = 0; $index -lt $tracks.Count; $index++) {
+                    if (([string]$tracks[$index].name).StartsWith($script:SessionTrackPrefix)) { $index }
+                }
+            )
+        }
+        Set-ProjectProgress 'Preparing project...'
         $chunks = @(
             for ($offset = 0; $offset -lt $encoded.Length; $offset += 512) {
                 $encoded.Substring($offset, [Math]::Min(512, $encoded.Length - $offset))
@@ -840,14 +982,7 @@ function Save-ProjectBookkeeping {
         $manifest = '{0}v2|{1}|{2}' -f $script:SessionTrackPrefix,
             $chunks.Count, (Get-SessionPayloadHash $encoded)
         Send-Audacity ('SetTrackStatus: Name=' + (Quote-Audacity $manifest))
-        Send-Audacity 'SelectNone:'
-        $file = Get-CurrentFile
-        $name = $script:State.Candidate
-        if (-not $name) { $name = $script:State.Accepted[$file.Name] }
-        if (-not $name) { $name = $script:State.Originals[$file.Name] }
-        if (-not $name -and $script:State.TextSourceOnly) { return }
-        $track = Find-AudioTrack $name
-        Select-AudioTrack $track.Index $track.Start $track.End
+        Restore-SessionSelection
     }
     finally { Set-ProjectProgress $previousProgress }
 }
