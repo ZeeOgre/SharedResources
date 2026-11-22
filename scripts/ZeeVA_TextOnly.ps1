@@ -243,11 +243,14 @@ function Select-TextVoiceType {
 function Open-TextDialogue {
     param([string]$Path = '')
 
-    if ($script:State.Files.Count) {
-        throw 'Save and close this project, then restart the helper with an empty Audacity project to load another script or voice type.'
+    if ($script:State.Recording) { throw 'Stop recording before opening another script.' }
+    if (-not $script:State.Connected -or -not $script:State.SessionVerified) {
+        throw 'Reconnect and verify the current Audacity session before opening another script.'
     }
     [object[]]$tracks = (Invoke-Audacity 'GetInfo: Type=Tracks Format=JSON') | ConvertFrom-Json
-    if ($tracks.Count) { throw 'Start with one empty Audacity project open, or use Scan Project to resume it.' }
+    if ($tracks.Count -and -not $script:State.Files.Count) {
+        throw 'Start with one empty Audacity project open, or use Scan Project to resume it.'
+    }
     $initialDirectory = if ($Path) {
         Split-Path ([IO.Path]::GetFullPath($Path)) -Parent
     } elseif ($script:State.DialogueExportPath) {
@@ -276,14 +279,23 @@ function Open-TextDialogue {
         $files = @($blocks[$blockNumber - 1].Files)
         $projectPath = Get-SpeakerBlockProjectPath -Folder $blockFolder -Block $blockNumber
     }
+    if ($script:State.ProjectPath -and
+        [IO.Path]::GetFullPath($projectPath) -ieq [IO.Path]::GetFullPath($script:State.ProjectPath)) {
+        Show-ScriptWindow
+        Set-StatusMessage 'This recording block is already open.'
+        return
+    }
     $overwrite = $false
+    $resume = $false
     if (Test-Path -LiteralPath $projectPath) {
         switch (Get-ExistingProjectAction -Path $projectPath) {
-            'Resume' { Open-ZeeVAProject -Path $projectPath; Show-ScriptWindow; return }
+            'Resume' { $resume = $true }
             'Overwrite' { $overwrite = $true }
             default { return }
         }
     }
+    if ($script:State.Files.Count) { Close-TextProject }
+    if ($resume) { Open-ZeeVAProject -Path $projectPath; Show-ScriptWindow; return }
     $script:State.Source = $data.Source
     $script:State.Files = $files
     $script:State.Index = 0
@@ -299,6 +311,41 @@ function Open-TextDialogue {
     Save-ProjectBookkeeping
     Save-ZeeVAProject -Path $projectPath -Overwrite:$overwrite -BookkeepingPrepared
     Set-StatusMessage ("Loaded {0} lines for {1}. No source WAVs required." -f $files.Count, $voice)
+}
+
+function Close-TextProject {
+    if ($script:State.Recording -or -not $script:State.Connected -or
+        -not $script:State.SessionVerified) {
+        throw 'Stop recording and reconnect to the current project before switching scripts.'
+    }
+    Save-ZeeVAProject
+    $script:State.SessionVerified = $false
+    Send-Audacity 'Stop:'
+    # File > Close keeps Audacity running and creates an empty project on Windows.
+    Send-Audacity 'Close:'
+    [object[]]$tracks = (Invoke-Audacity 'GetInfo: Type=Tracks Format=JSON') | ConvertFrom-Json
+    if ($tracks.Count) {
+        throw 'Audacity did not switch to an empty project. Open the saved block and Reconnect, or close other project windows and Scan Project before continuing.'
+    }
+    $script:State.Files = @()
+    $script:State.Index = 0
+    foreach ($map in @('Originals', 'Recorded', 'Accepted', 'Exported', 'Candidates', 'DialogueByFile')) {
+        $script:State[$map] = @{}
+    }
+    $script:State.Candidate = $null
+    $script:State.RecordingTargetName = $null
+    $script:State.RecordingStart = 0.0
+    $script:State.InterruptedRecording = $false
+    $script:State.Source = ''
+    $script:State.ProjectPath = ''
+    $script:State.VoiceType = ''
+    $script:State.DialogueExportPath = ''
+    $script:State.ProjectProgress = ''
+    $script:State.SessionDirty = $false
+    $script:DialogueRows = @()
+    $script:DialogueIndexedRows = $null
+    $script:DialogueIndex = @{}
+    $script:State.SessionVerified = $true
 }
 
 function Select-TextLineTrack {
@@ -389,7 +436,8 @@ function Update-ScriptDisplay {
     } else { 'No matching script loaded' }
     $script:ScriptLoadButton.Text = if ($hasScript) { 'Load Script...' } else { 'Find Script...' }
     $script:ScriptLoadButton.Enabled = -not $script:State.Busy -and -not $script:State.Recording -and
-        (-not $script:State.TextSourceOnly -or $script:State.Files.Count -eq 0)
+        (-not $script:State.TextSourceOnly -or
+            ($script:State.Connected -and $script:State.SessionVerified))
     if ($script:ActionToolTip) {
         $script:ActionToolTip.SetToolTip($script:ScriptExportLabel, $script:State.DialogueExportPath)
     }
@@ -3018,7 +3066,8 @@ function Update-Display {
     )
 
     if ($script:ActionButtons) {
-        $script:ActionButtons[1].Enabled = $audioReady -and -not $loaded
+        $script:ActionButtons[1].Enabled = $audioReady -and -not $script:State.Recording -and
+            ($script:State.TextSourceOnly -or -not $loaded)
         $script:ActionButtons[2].Enabled = $audioReady -and $loaded -and
             $script:State.Accepted.Count -gt 0 -and -not $script:State.Recording
         $script:ActionButtons[3].Enabled = -not $script:State.Recording

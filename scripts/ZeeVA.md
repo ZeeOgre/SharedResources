@@ -111,8 +111,14 @@ imports original WAVs. The existing WAV-based script retains its normal behavior
   Other voices' rows are not stored in the project. Their fallback export-order
   context is available while the full import is loaded; after resuming, supplied
   before/after context and neighboring saved rows remain available.
-  Script/voice replacement is disabled within a loaded session: save and close
-  the project, then restart with an empty Audacity project to switch sessions.
+  In the standalone text-only launcher, Open Script remains available between
+  takes. Select the same export and choose the next block, or select another
+  script/voice. Once all selections are confirmed, ZeeVA saves the current
+  project (including unaccepted takes), closes it in Audacity, and opens or
+  creates the selected project without restarting either application.
+  Cancelling a picker leaves the current session intact; selecting the current
+  block does nothing. Switching is disabled while recording, busy, disconnected
+  or unverified. Keep only one Audacity project window open.
   Use the matching launcher for each project's source mode.
 - `ZeeVA_TextOnly.ini` remembers this companion's paths separately from
   `ZeeVA.ini`. Both helpers share Audacity's executable settings and single-client
@@ -134,7 +140,9 @@ imports original WAVs. The existing WAV-based script retains its normal behavior
   when a project reaches 90 tracks and refuses a take that would exceed the cap;
   export the block and continue in the next one.
 - Open Project opens an `.aup3` file in an empty Audacity project and scans it.
-  To switch sessions, save and close the current Audacity project and restart ZeeVA.
+  To switch sessions in the WAV launcher, save and close the current Audacity
+  project and restart ZeeVA. The standalone text-only launcher can switch blocks
+  through Open Script as described above.
 - Scan Project reads the currently open Audacity project. Older ZeeVA projects
   need their original source folder located once. Acceptance is recovered only
   from an unambiguous filename label within a matching take, not from a recording
