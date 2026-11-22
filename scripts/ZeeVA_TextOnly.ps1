@@ -846,11 +846,9 @@ function Save-SessionCheckpoint {
             throw 'No room for a recovery checkpoint within the Audacity scripting track limit.'
         }
     }
-    $labelIndex = @(Get-AudacityLabels).Count
     Send-Audacity 'SelectNone:'
     if ($checkpoints.Count -eq 1) {
         $index = [Array]::IndexOf($Tracks, $checkpoints[0])
-        $labelIndex -= @(Get-AudacityLabels | Where-Object { $_.Track -eq $index }).Count
         Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f $index)
         Send-Audacity 'RemoveTracks:'
     }
@@ -858,10 +856,9 @@ function Save-SessionCheckpoint {
     Send-Audacity 'NewLabelTrack:'
     Set-ProjectProgress ('Saving progress - 0/{0} labels' -f $chunks.Count)
     for ($chunkIndex = 0; $chunkIndex -lt $chunks.Count; $chunkIndex++) {
-        $time = Format-Time ($chunkIndex / 1000.0)
-        Send-Audacity ('Select: Track={0} TrackCount=1 Start={1} End={1}' -f $index, $time)
-        Send-Audacity 'AddLabel:'
-        Send-Audacity ('SetLabel: Label={0} Text={1}' -f ($labelIndex + $chunkIndex),
+        $time = $chunkIndex / 1000.0
+        $labelIndex = New-AudacityLabel -Track $index -Start $time -End $time
+        Send-Audacity ('SetLabel: Label={0} Text={1}' -f $labelIndex,
             (Quote-Audacity ('ZeeVA Data|{0}|{1}' -f $chunkIndex, $chunks[$chunkIndex])))
         Set-ProjectProgress ('Saving progress - {0}/{1} labels' -f ($chunkIndex + 1), $chunks.Count)
     }
@@ -878,6 +875,24 @@ function Restore-SessionSelection {
     if (-not $name -and $script:State.TextSourceOnly) { return }
     $track = Find-AudioTrack $name
     Select-AudioTrack $track.Index $track.Start $track.End
+}
+
+function New-AudacityLabel {
+    param([int]$Track, [double]$Start, [double]$End)
+
+    Select-AudioTrack $Track $Start $End
+    # AddLabel follows focus, not the selected track.
+    Send-Audacity 'SetTrackStatus: Focused=1'
+    Send-Audacity 'AddLabel:'
+    $created = @(Get-AudacityLabels | Where-Object {
+        $_.Track -eq $Track -and [string]::IsNullOrEmpty($_.Text) -and
+        [Math]::Abs($_.Start - $Start) -lt 0.001 -and
+        [Math]::Abs($_.End - $End) -lt 0.001
+    })
+    if ($created.Count -ne 1) {
+        throw "Could not identify the new label on track $Track. No existing label was renamed."
+    }
+    return $created[0].Index
 }
 
 function Save-ProjectBookkeeping {
@@ -957,24 +972,21 @@ function Save-ProjectBookkeeping {
             }
         )
         Set-ProjectProgress ('Preparing project - 0/{0} labels' -f $chunks.Count)
-        $labelIndex = @(Get-AudacityLabels).Count
         Send-Audacity 'SelectNone:'
         if ($metadataIndices.Count -eq 1) {
             if ($tracks[$metadataIndices[0]].kind -cne 'label') {
                 throw 'The ZeeVA bookkeeping track must be a label track, not audio.'
             }
-            $labelIndex -= @(Get-AudacityLabels | Where-Object { $_.Track -eq $metadataIndices[0] }).Count
             Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f $metadataIndices[0])
             Send-Audacity 'RemoveTracks:'
         }
         $metadataIndex = $tracks.Count - $metadataIndices.Count
         Send-Audacity 'NewLabelTrack:'
         for ($chunkIndex = 0; $chunkIndex -lt $chunks.Count; $chunkIndex++) {
-            $time = Format-Time ($chunkIndex / 1000.0)
-            Send-Audacity ('Select: Track={0} TrackCount=1 Start={1} End={1}' -f $metadataIndex, $time)
-            Send-Audacity 'AddLabel:'
+            $time = $chunkIndex / 1000.0
+            $labelIndex = New-AudacityLabel -Track $metadataIndex -Start $time -End $time
             Send-Audacity ('SetLabel: Label={0} Text={1}' -f
-                ($labelIndex + $chunkIndex),
+                $labelIndex,
                 (Quote-Audacity ('ZeeVA Data|{0}|{1}' -f $chunkIndex, $chunks[$chunkIndex])))
             Set-ProjectProgress ('Preparing project - {0}/{1} labels' -f ($chunkIndex + 1), $chunks.Count)
         }

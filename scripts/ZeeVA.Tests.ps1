@@ -872,6 +872,7 @@ try {
         $script:ProjectTracks = @($script:MockTracks) + @([pscustomobject]@{Name='Regions'; kind='label'})
         $script:ProjectLabels = @([pscustomobject]@{Index=0; Track=2; Text='line'; Start=2.0; End=3.0})
         $script:SelectedTrack = 0
+        $script:FocusedTrack = 2
         $script:SelectedStart = 0.0
         $script:SelectedEnd = 0.0
         $script:Commands = [Collections.Generic.List[string]]::new()
@@ -896,7 +897,19 @@ try {
                 $script:ProjectTracks += [pscustomobject]@{Name='Labels'; kind='label'}
             }
             elseif ($Command -eq 'AddLabel:') {
-                $script:ProjectLabels += [pscustomobject]@{Index=$script:ProjectLabels.Count; Track=$script:SelectedTrack; Text=''; Start=$script:SelectedStart; End=$script:SelectedEnd}
+                $target = @(
+                    for ($index = $script:FocusedTrack; $index -lt $script:ProjectTracks.Count; $index++) {
+                        if ($script:ProjectTracks[$index].kind -ceq 'label') { $index; break }
+                    }
+                )
+                Assert-Test ($target.Count -eq 1) 'Audacity mock could not find a label track at or after focus.'
+                $script:FocusedTrack = $target[0]
+                $script:ProjectLabels += [pscustomobject]@{Index=$script:ProjectLabels.Count; Track=$target[0]; Text=''; Start=$script:SelectedStart; End=$script:SelectedEnd}
+                $script:ProjectLabels = @($script:ProjectLabels | Sort-Object Track,Start,End)
+                for ($index = 0; $index -lt $script:ProjectLabels.Count; $index++) { $script:ProjectLabels[$index].Index = $index }
+            }
+            elseif ($Command -eq 'SetTrackStatus: Focused=1') {
+                $script:FocusedTrack = $script:SelectedTrack
             }
             elseif ($Command -match '^SetLabel: Label=([0-9]+) Text="([^"]*)"') {
                 $script:ProgressAtWrites.Add([string]$script:State.ProjectProgress)
@@ -918,6 +931,7 @@ try {
                         if ($trackIndex -ne $script:SelectedTrack) { $script:ProjectTracks[$trackIndex] }
                     }
                 )
+                $script:FocusedTrack = [Math]::Min($script:SelectedTrack, $script:ProjectTracks.Count - 1)
             }
         }
         Save-ProjectBookkeeping
