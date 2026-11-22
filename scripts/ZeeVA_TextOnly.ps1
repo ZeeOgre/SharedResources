@@ -3066,7 +3066,8 @@ function Update-Display {
     )
 
     if ($script:ActionButtons) {
-        $script:ActionButtons[1].Enabled = $audioReady -and -not $script:State.Recording -and
+        $script:ActionButtons[1].Enabled = $audioReady -and -not $script:State.Busy -and
+            -not $script:State.Recording -and
             ($script:State.TextSourceOnly -or -not $loaded)
         $script:ActionButtons[2].Enabled = $audioReady -and $loaded -and
             $script:State.Accepted.Count -gt 0 -and -not $script:State.Recording

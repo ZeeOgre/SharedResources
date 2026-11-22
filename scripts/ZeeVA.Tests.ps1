@@ -124,6 +124,7 @@ try {
 
     Invoke-TestCase 'Opening text-only scripts creates a project without importing audio' {
         $script:State.TextSourceOnly = $true
+        $script:State.Connected = $true
         $script:State.Files = @()
         $script:MockTracks = @()
         $path = Join-Path $testRoot 'open-text.tsv'
@@ -160,6 +161,7 @@ try {
 
     Invoke-TestCase 'Text-only loading prefers filtered exports and prompts for missing files' {
         $script:State.TextSourceOnly = $true
+        $script:State.Connected = $true
         $script:State.Files = @()
         $script:MockTracks = @()
         $standard = Join-Path $testRoot 'prefer-text.tsv'
@@ -195,6 +197,174 @@ try {
         function Select-DialogueExportFile { return '' }
         Open-TextDialogue -Path (Join-Path $testRoot 'absent.txt')
         Assert-Test ($script:State.Files.Count -eq 0) 'Cancelling a missing export prompt started a session.'
+    }
+
+    if ($SourceFile -eq 'ZeeVA_TextOnly.ps1') {
+        Invoke-TestCase 'Switching text blocks saves and closes before creating or resuming the next project' {
+            $path = Join-Path $testRoot 'switch-text_TestVT.tsv'
+            @(1..43 | ForEach-Object {
+                [pscustomobject]@{FILENAME=('{0:D8}' -f $_); 'RESPONSE TEXT'="Line $_"; 'VOICE TYPE'='TestVT'}
+            }) | Export-Csv -LiteralPath $path -Delimiter "`t" -Encoding UTF8 -NoTypeInformation
+            $stem = Join-Path $testRoot 'switch-text_TestVT_TestVT'
+            $oldPath = Get-SpeakerBlockProjectPath -Folder $stem -Block 1
+            $nextPath = Get-SpeakerBlockProjectPath -Folder $stem -Block 2
+            function Choose-SpeakerBlock { return 2 }
+            function Get-ExistingProjectAction { return 'Resume' }
+            function Update-Display {}
+            function Show-ScriptWindow {}
+            function Save-SessionSettings {}
+            function Save-ProjectBookkeeping {
+                Assert-Test ($script:State.Accepted.Count -eq 0 -and $script:State.Exported.Count -eq 0 -and
+                    $script:State.Recorded.Count -eq 0 -and $script:State.Candidates.Count -eq 0 -and
+                    -not $script:State.Candidate) 'Previous block progress leaked into the new baseline.'
+            }
+            function Save-ZeeVAProject {
+                param($Path, [switch]$BookkeepingPrepared)
+                if (-not $Path) {
+                    Assert-Test ($script:State.ProjectPath -ceq $oldPath -and
+                        $script:State.Accepted['line.wav'] -ceq 'TAKE|line|one') 'Current block was reset before saving.'
+                    $script:Operations.Add('Save current')
+                }
+                else {
+                    Assert-Test ($Path -ceq $nextPath -and $BookkeepingPrepared) 'Wrong block saved or bookkeeping repeated.'
+                    $script:State.ProjectPath = $Path
+                    $script:Operations.Add('Save next')
+                }
+                $script:State.SessionDirty = $false
+            }
+            function Send-Audacity {
+                param($Command)
+                $script:Operations.Add($Command)
+                if ($Command -ceq 'Close:') { $script:MockTracks = @() }
+                elseif ($Command -like 'OpenProject2:*') {
+                    Assert-Test ($script:State.Files.Count -eq 0 -and $script:State.Accepted.Count -eq 0) 'Resume retained the previous session.'
+                }
+                elseif ($Command -cne 'Stop:') { throw "Unexpected command: $Command" }
+            }
+            function Restore-ProjectSession {
+                $script:State.Files = @([IO.FileInfo]::new((Join-Path $testRoot '00000042.wav')))
+                $script:State.Accepted = @{'00000042.wav'='TAKE|00000042|saved'}
+                $script:State.SessionVerified = $true
+                $script:Operations.Add('Restore next')
+            }
+            foreach ($mode in @('Fresh', 'Resume')) {
+                $script:State.TextSourceOnly = $true
+                $script:State.Connected = $true
+                $script:State.SessionVerified = $true
+                $script:State.Files = @([IO.FileInfo]::new((Join-Path $testRoot 'line.wav')))
+                $script:State.ProjectPath = $oldPath
+                $script:State.Accepted = @{'line.wav'='TAKE|line|one'}
+                $script:State.Exported = @{'line.wav'='old receipt'}
+                $script:State.Recorded = @{'line.wav'=@('TAKE|line|one')}
+                $script:State.Candidate = 'TAKE|line|retake'
+                $script:State.Candidates = @{'line.wav'='TAKE|line|retake'}
+                $script:State.SessionDirty = $true
+                $script:MockTracks = @([pscustomobject]@{name='Old session'})
+                $script:Operations = [Collections.Generic.List[string]]::new()
+                $outputRoot = $script:State.OutputRoot
+                if ($mode -eq 'Resume') { [IO.File]::WriteAllText($nextPath, 'saved project fixture') }
+                Open-TextDialogue -Path $path
+                Assert-Test (($script:Operations[0..2] -join ',') -ceq 'Save current,Stop:,Close:') 'Switch did not save before closing.'
+                Assert-Test ($script:State.ProjectPath -ceq $nextPath -and $script:State.SessionVerified -and
+                    $script:State.OutputRoot -ceq $outputRoot -and $script:State.Connected) 'Switch lost project verification or configuration.'
+                if ($mode -eq 'Fresh') {
+                    Assert-Test (($script:State.Files.Name -join ',') -ceq '00000041.wav,00000042.wav,00000043.wav' -and
+                        $script:State.Index -eq 0 -and $script:Operations[-1] -ceq 'Save next') 'Wrong recording block initialized.'
+                }
+                else {
+                    Assert-Test ($script:Operations[3] -ceq ('OpenProject2: Filename=' + (Quote-Audacity $nextPath)) -and
+                        $script:Operations[-1] -ceq 'Restore next' -and $script:State.Accepted.ContainsKey('00000042.wav')) 'Existing next block was not resumed.'
+                }
+            }
+        }
+
+        Invoke-TestCase 'Cancelled, invalid and current-block selections preserve the loaded text session' {
+            $script:State.TextSourceOnly = $true
+            $script:State.Connected = $true
+            $script:State.SessionDirty = $true
+            $script:State.Accepted = @{'line.wav'='TAKE|line|one'}
+            $path = Join-Path $testRoot 'cancel-switch_TestVT.tsv'
+            @(1..41 | ForEach-Object {
+                [pscustomobject]@{FILENAME="line$_"; 'RESPONSE TEXT'="Line $_"; 'VOICE TYPE'='TestVT'}
+            }) | Export-Csv -LiteralPath $path -Delimiter "`t" -Encoding UTF8 -NoTypeInformation
+            $stem = Join-Path $testRoot 'cancel-switch_TestVT_TestVT'
+            $script:State.ProjectPath = Get-SpeakerBlockProjectPath -Folder $stem -Block 1
+            [IO.File]::WriteAllText((Get-SpeakerBlockProjectPath -Folder $stem -Block 2), 'existing')
+            $invalid = Join-Path $testRoot 'invalid-switch.tsv'
+            @([pscustomobject]@{FILENAME='CON'; 'RESPONSE TEXT'='Invalid'; 'VOICE TYPE'='TestVT'}) |
+                Export-Csv -LiteralPath $invalid -Delimiter "`t" -Encoding UTF8 -NoTypeInformation
+            function Select-DialogueExportFile { return '' }
+            function Select-TextVoiceType { if ($script:CancelAt -ne 'Voice') { return 'TestVT' } }
+            function Choose-SpeakerBlock {
+                if ($script:CancelAt -eq 'Block') { return 0 }
+                if ($script:CancelAt -eq 'Current') { return 1 }
+                return 2
+            }
+            function Get-ExistingProjectAction { return 'Cancel' }
+            function Save-ZeeVAProject { throw 'Unexpected save on cancelled selection.' }
+            function Send-Audacity { throw 'Unexpected project change on cancelled selection.' }
+            function Show-ScriptWindow {}
+            $files = $script:State.Files
+            $accepted = $script:State.Accepted
+            $projectPath = $script:State.ProjectPath
+            foreach ($script:CancelAt in @('File', 'Voice', 'Block', 'Existing', 'Current', 'Invalid')) {
+                $selected = switch ($script:CancelAt) { 'File' { '' }; 'Invalid' { $invalid }; default { $path } }
+                $failure = ''
+                try { Open-TextDialogue -Path $selected } catch { $failure = $_.Exception.Message }
+                if ($script:CancelAt -eq 'Invalid') { Assert-Test ($failure -like 'Invalid recording filename*') "Invalid script did not fail validation: $failure" }
+                else { Assert-Test (-not $failure) "Selection unexpectedly failed: $failure" }
+                Assert-Test ([object]::ReferenceEquals($files, $script:State.Files) -and
+                    [object]::ReferenceEquals($accepted, $script:State.Accepted) -and
+                    $script:State.ProjectPath -ceq $projectPath -and $script:State.SessionDirty -and
+                    $script:State.SessionVerified) "Session changed at $script:CancelAt."
+            }
+        }
+
+        Invoke-TestCase 'Failed saves and uncertain closes never initialize the next text session' {
+            $script:State.TextSourceOnly = $true
+            $script:State.Connected = $true
+            $script:State.ProjectPath = Join-Path $testRoot 'retained.aup3'
+            $script:State.Accepted = @{'line.wav'='TAKE|line|one'}
+            $files = $script:State.Files
+            function Save-ZeeVAProject {
+                $script:Operations.Add('Save')
+                if ($script:FailAt -eq 'Save') { throw 'Save failed' }
+            }
+            function Send-Audacity {
+                param($Command)
+                $script:Operations.Add($Command)
+                if ($script:FailAt -eq 'Close') { throw 'Close failed' }
+            }
+            function Invoke-Audacity {
+                if ($script:FailAt -eq 'Query') { throw 'Query failed' }
+                return '[{"name":"Still open"}]'
+            }
+            foreach ($script:FailAt in @('Save', 'Close', 'Query', 'Nonempty')) {
+                $script:State.SessionVerified = $true
+                $script:Operations = [Collections.Generic.List[string]]::new()
+                $failed = $false
+                try { Close-TextProject } catch { $failed = $true }
+                Assert-Test ($failed -and [object]::ReferenceEquals($files, $script:State.Files) -and
+                    $script:State.Accepted.ContainsKey('line.wav')) 'Failure cleared recoverable session state.'
+                if ($script:FailAt -eq 'Save') {
+                    Assert-Test ($script:Operations.Count -eq 1 -and $script:State.SessionVerified) 'Save failure still closed the project.'
+                }
+                else { Assert-Test (-not $script:State.SessionVerified) 'An uncertain project transition left recording enabled.' }
+            }
+        }
+
+        Invoke-TestCase 'Text script switching rejects recording, disconnected and unverified sessions' {
+            $script:State.TextSourceOnly = $true
+            function Invoke-Audacity { throw 'Switch reached Audacity despite a blocked session.' }
+            foreach ($blocked in @('Recording', 'Disconnected', 'Unverified')) {
+                $script:State.Recording = $blocked -eq 'Recording'
+                $script:State.Connected = $blocked -ne 'Disconnected'
+                $script:State.SessionVerified = $blocked -ne 'Unverified'
+                $failure = ''
+                try { Open-TextDialogue } catch { $failure = $_.Exception.Message }
+                Assert-Test ($failure -like '*Stop recording*' -or $failure -like '*Reconnect and verify*') "Switch was not guarded: $failure"
+            }
+        }
     }
 
     Invoke-TestCase 'Text-only navigation and acceptance work on lines without source tracks' {
@@ -305,7 +475,18 @@ try {
             Assert-Test ($script:Form.AllowDrop -and $script:ScriptWindow.AllowDrop) 'Script file drop is missing from a window.'
             Assert-Test ($script:ScriptColumns[1].Body.Text -ceq 'Only record me' -and $script:State.Files.Count -eq 1) 'The current recording column includes other voices.'
             Assert-Test ($script:ScriptColumns[0].Body.Text -ceq 'Other before' -and $script:ScriptColumns[2].Body.Text -ceq 'Other after') 'Filtering recording lines removed other-voice context.'
-            Assert-Test (-not $script:ScriptLoadButton.Enabled) 'A loaded project can replace its script or voice type.'
+            if ($SourceFile -eq 'ZeeVA_TextOnly.ps1') {
+                Assert-Test ($script:ScriptLoadButton.Enabled -and $script:ActionButtons[1].Enabled) 'Open Script is disabled between takes.'
+                foreach ($blocked in @('Recording', 'Busy', 'Disconnected', 'Unverified')) {
+                    $script:State.Recording = $blocked -eq 'Recording'
+                    $script:State.Busy = $blocked -eq 'Busy'
+                    $script:State.Connected = $blocked -ne 'Disconnected'
+                    $script:State.SessionVerified = $blocked -ne 'Unverified'
+                    Update-Display
+                    Assert-Test (-not $script:ScriptLoadButton.Enabled -and -not $script:ActionButtons[1].Enabled) "Open Script is enabled while $blocked."
+                }
+            }
+            else { Assert-Test (-not $script:ScriptLoadButton.Enabled) 'A loaded project can replace its script or voice type.' }
         }
         finally { $script:ScriptWindow.Dispose(); $script:ActionToolTip.Dispose(); $script:Form.Dispose() }
     }
