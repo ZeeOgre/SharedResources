@@ -88,12 +88,21 @@ imports original WAVs. The existing WAV-based script retains its normal behavior
   before splitting into labels, reducing the scripting commands for each save
   without discarding dialogue columns or recovery state.
   In the text-only launcher, the full script/block snapshot is written once.
-  Subsequent changes use a separate small `ZeeVA Progress|v2|` label track for
-  take selection, acceptance, current line, output path and export receipts.
+  Subsequent changes append small version-3 checkpoint records to that label
+  track for take selection, acceptance, current line, output path and export
+  receipts. Progress saves never rename or remove tracks. A commit label is
+  written only after all new chunks are verified; an interrupted save leaves
+  the previous committed checkpoint readable and can be retried safely.
+  Older separate `ZeeVA Progress|v2|` tracks remain readable.
   Unchanged saves do not rewrite labels. Routine updates show `Saving progress`
   rather than `Preparing project`; changing the script/block data rebuilds the
-  full snapshot. Both tracks are required for recovery and count toward the track
-  limit. Their checksums bind progress to its matching full snapshot.
+  full snapshot. Journal updates require no extra track, and their checksums
+  bind progress to its matching full snapshot. Use the updated text-only launcher
+  to resume projects containing version-3 checkpoint records.
+  After successful bookkeeping, the current pending take (or the current line's
+  accepted take) is selected and brought back into vertical view before the
+  Audacity project save. This leaves the zoom unchanged and works even with
+  label tracks below the take. Unrecorded lines do not jump to a metadata track.
   Metadata writes explicitly focus their label track and obtain each new label's
   actual global index before naming it; selection alone does not control where
   Audacity's `AddLabel` writes. An unidentified label stops the save rather than
@@ -103,6 +112,9 @@ imports original WAVs. The existing WAV-based script retains its normal behavior
   or naming the replacement. A mixed audio/label selection stops the operation
   rather than renaming or removing recordings. Avoid editing Audacity during a
   checkpoint save.
+  This selection safety stop is shown as a yellow-highlighted warning, not a red
+  failure. The checkpoint still has not completed: leave Audacity untouched and
+  retry Save Project. Other errors remain red.
   Acceptance/export checks allow only the rounding precision of Audacity's
   six-significant-digit JSON times. Export selections are clamped to the reported
   take bounds; empty, disjoint or genuinely out-of-bounds labels still fail.

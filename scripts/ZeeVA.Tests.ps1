@@ -36,7 +36,8 @@ function Invoke-TestCase {
     $script:State.OutputRoot = Join-Path $testRoot 'Output'
     $script:State.Files = @([IO.FileInfo]::new((Join-Path $testRoot 'line.wav')))
     $script:State.Originals = @{'line.wav' = 'SRC|line'}
-    $script:FeedbackLabel = [pscustomobject]@{Text=''; ForeColor=$null}
+    $script:FeedbackLabel = [pscustomobject]@{Text=''; ForeColor=$null; BackColor=[Drawing.SystemColors]::Control}
+    $script:ActionToolTip = $null
     $script:DialogueRows = @()
     $script:MockTracks = @(
         [pscustomobject]@{Index=0; Name='SRC|line'; Start=0.0; End=1.0; Channels=2},
@@ -1069,6 +1070,7 @@ try {
         $script:SelectedEnd = 0.0
         $script:Commands = [Collections.Generic.List[string]]::new()
         $script:ProgressAtWrites = [Collections.Generic.List[string]]::new()
+        $script:FailJournalCommit = $false
         function Get-AudacityLabels { $script:ProjectLabels }
         function Invoke-Audacity {
             param($Command)
@@ -1083,6 +1085,10 @@ try {
         function Send-Audacity {
             param($Command)
             $script:Commands.Add($Command)
+            if ($script:FailJournalCommit -and $Command -like '*Text="ZeeVA Checkpoint|v3|*') {
+                $script:FailJournalCommit = $false
+                throw 'Simulated interrupted checkpoint commit.'
+            }
             if ($Command -match '^Select(?:Tracks)?: Track=([0-9]+)') {
                 $script:SelectedTrack = [int]$matches[1]
                 if ($Command -match ' Start=([0-9.]+) End=([0-9.]+)') {
@@ -1107,6 +1113,14 @@ try {
             }
             elseif ($Command -eq 'SetTrackStatus: Focused=1') {
                 $script:FocusedTrack = $script:SelectedTrack
+            }
+            elseif ($Command -eq 'FirstTrack:') {
+                $script:FocusedTrack = 0
+                $script:VisibleTrack = $script:FocusedTrack
+            }
+            elseif ($Command -eq 'NextTrack:') {
+                $script:FocusedTrack = [Math]::Min($script:FocusedTrack + 1, $script:ProjectTracks.Count - 1)
+                $script:VisibleTrack = $script:FocusedTrack
             }
             elseif ($Command -match '^SetLabel: Label=([0-9]+) Text="([^"]*)"') {
                 $script:ProgressAtWrites.Add([string]$script:State.ProjectProgress)
@@ -1174,7 +1188,9 @@ try {
         if ($SourceFile -eq 'ZeeVA_TextOnly.ps1') {
             $baseline = @($script:ProjectTracks | Where-Object { $_.Name.StartsWith($script:SessionTrackPrefix) })[0]
             $baselineIndex = [Array]::IndexOf($script:ProjectTracks, $baseline)
-            $baselineLabels = @($script:ProjectLabels | Where-Object Track -eq $baselineIndex)
+            $baselineLabels = @($script:ProjectLabels | Where-Object {
+                $_.Track -eq $baselineIndex -and $_.Text -match '^ZeeVA Data\|[0-9]+\|'
+            })
             $baselineText = $baselineLabels.Text -join '|'
             $baselineCount = $baselineLabels.Count
             $script:Commands.Clear()
@@ -1188,17 +1204,18 @@ try {
                 $fullTracks += [pscustomobject]@{Name='Extra audio'; kind='wave'}
             }
             $payload = Read-SessionTrackPayload -Tracks $script:ProjectTracks -Metadata $baseline -Prefix $script:SessionTrackPrefix
-            $rejected = ''
-            try { Save-SessionCheckpoint -Tracks $fullTracks -Baseline $payload }
-            catch { $rejected = $_.Exception.Message }
-            Assert-Test ($rejected -like '*scripting track limit*' -and
+            Save-SessionCheckpoint -Tracks $fullTracks -Baseline $payload
+            Assert-Test (
                 @($script:Commands | Where-Object { $_ -eq 'NewLabelTrack:' }).Count -eq 0) 'Checkpoint exceeded the scripting track limit or modified an over-limit project.'
             Save-ProjectBookkeeping
-            $checkpointLabels = @($script:ProjectLabels | Where-Object { $_.Track -ne $baselineIndex -and $_.Text -like 'ZeeVA Data|*' })
+            $checkpointLabels = @($script:ProjectLabels | Where-Object { $_.Text -like 'ZeeVA Checkpoint Data|*' })
             Assert-Test ($checkpointLabels.Count -lt $baselineCount) 'Stopping-sized progress data was not smaller than the dialogue payload.'
-            Assert-Test ((@($script:ProjectLabels | Where-Object Track -eq $baselineIndex).Text -join '|') -ceq $baselineText) 'Progress save rewrote the dialogue baseline.'
+            Assert-Test ((@($script:ProjectLabels | Where-Object { $_.Track -eq $baselineIndex -and $_.Text -match '^ZeeVA Data\|[0-9]+\|' }).Text -join '|') -ceq $baselineText) 'Progress save rewrote the dialogue baseline.'
             $snapshot = Get-ProjectSessionData $script:ProjectTracks
             Assert-Test ($snapshot.Candidate -ceq 'TAKE|line|one' -and $snapshot.DialogueRows.Count -eq 301) 'Progress checkpoint lost the candidate or dialogue on recovery.'
+            Assert-Test ($script:VisibleTrack -eq 1 -and $script:FocusedTrack -eq 1 -and
+                $script:SelectedTrack -eq 1 -and $script:SelectedStart -eq 2.0 -and $script:SelectedEnd -eq 3.0
+            ) 'Checkpoint did not bring the pending take back into view with its selection intact.'
             $script:Commands.Clear()
             Save-ProjectBookkeeping
             Assert-Test (@($script:Commands | Where-Object { $_ -eq 'AddLabel:' -or $_ -eq 'RemoveTracks:' -or $_ -like 'SetLabel:*' }).Count -eq 0) 'Identical progress checkpoint was rewritten.'
@@ -1211,26 +1228,50 @@ try {
             $snapshot = Get-ProjectSessionData $script:ProjectTracks
             Assert-Test ($snapshot.CurrentFile -ceq 'DialogueLine00001.wav' -and $snapshot.Accepted.'line.wav' -ceq 'TAKE|line|one' -and
                 $snapshot.OutputRoot -ceq $script:State.OutputRoot -and $snapshot.Exported.'line.wav'.Hash -ceq 'receipt') 'Checkpoint did not restore advancement, acceptance, output path or export receipts.'
-            Assert-Test ((@($script:ProjectLabels | Where-Object Track -eq $baselineIndex).Text -join '|') -ceq $baselineText) 'Acceptance rewrote unchanged dialogue.'
+            Assert-Test ((@($script:ProjectLabels | Where-Object { $_.Track -eq $baselineIndex -and $_.Text -match '^ZeeVA Data\|[0-9]+\|' }).Text -join '|') -ceq $baselineText) 'Acceptance rewrote unchanged dialogue.'
+            $script:Commands.Clear()
+            $script:State.Index = 2
+            $script:FailJournalCommit = $true
+            $rejected = ''
+            try { Save-ProjectBookkeeping } catch { $rejected = $_.Exception.Message }
+            $snapshot = Get-ProjectSessionData $script:ProjectTracks
+            Assert-Test ($rejected -ceq 'Simulated interrupted checkpoint commit.' -and
+                $snapshot.CurrentFile -ceq 'DialogueLine00001.wav' -and $snapshot.Accepted.'line.wav' -ceq 'TAKE|line|one') 'An interrupted save destroyed the previous checkpoint.'
+            Save-ProjectBookkeeping
+            $snapshot = Get-ProjectSessionData $script:ProjectTracks
+            Assert-Test ($snapshot.CurrentFile -ceq 'DialogueLine00002.wav' -and
+                @($script:Commands | Where-Object { $_ -eq 'RemoveTracks:' -or $_ -eq 'NewLabelTrack:' -or $_ -like 'SetTrackStatus: Name=*' }).Count -eq 0) 'Retry failed or progress saves still rename/remove tracks.'
             $wrongCheckpoint = (Get-SessionTrackName -CheckpointHash ('A' * 64)).Substring($script:SessionTrackPrefix.Length)
-            $wrongTracks = @($script:ProjectTracks | ForEach-Object {
-                if ($_.Name.StartsWith('ZeeVA Progress|')) { [pscustomobject]@{Name=('ZeeVA Progress|' + $wrongCheckpoint)} }
-                else { $_ }
-            })
+            $savedLabels = @($script:ProjectLabels)
+            $wrongChunks = @(
+                for ($offset = 0; $offset -lt $wrongCheckpoint.Length; $offset += 512) {
+                    $wrongCheckpoint.Substring($offset, [Math]::Min(512, $wrongCheckpoint.Length - $offset))
+                }
+            )
+            for ($i = 0; $i -lt $wrongChunks.Count; $i++) {
+                $script:ProjectLabels += [pscustomobject]@{Index=$script:ProjectLabels.Count; Track=$baselineIndex; Start=1.0; End=1.0; Text=('ZeeVA Checkpoint Data|99999|{0}|{1}' -f $i, $wrongChunks[$i])}
+            }
+            $script:ProjectLabels += [pscustomobject]@{Index=$script:ProjectLabels.Count; Track=$baselineIndex; Start=1.0; End=1.0; Text=('ZeeVA Checkpoint|v3|99999|{0}|{1}' -f $wrongChunks.Count, (Get-SessionPayloadHash $wrongCheckpoint))}
             $rejected = ''
             try {
-                Get-ProjectSessionData $wrongTracks
+                Get-ProjectSessionData $script:ProjectTracks
             } catch { $rejected = $_.Exception.Message }
             Assert-Test ($rejected -like '*does not match this session*') 'Progress from a different baseline was accepted.'
-            $checkpointTrack = @($script:ProjectTracks | Where-Object { $_.Name.StartsWith('ZeeVA Progress|') })[0]
-            $checkpointIndex = [Array]::IndexOf($script:ProjectTracks, $checkpointTrack)
-            $label = @($script:ProjectLabels | Where-Object Track -eq $checkpointIndex)[0]
+            $script:ProjectLabels = $savedLabels
+            $latest = @($script:ProjectLabels | Where-Object { $_.Text -like 'ZeeVA Checkpoint|v3|*' } | Sort-Object { [long]($_.Text.Split('|')[2]) } -Descending)[0]
+            $dataPrefix = 'ZeeVA Checkpoint Data|' + $latest.Text.Split('|')[2] + '|'
+            $label = @($script:ProjectLabels | Where-Object { $_.Text.StartsWith($dataPrefix) })[0]
             $originalText = $label.Text
             $label.Text += 'A'
             $rejected = ''
             try { Get-ProjectSessionData $script:ProjectTracks } catch { $rejected = $_.Exception.Message }
             Assert-Test ($rejected -like '*checksum*') 'Corrupt progress was accepted.'
             $label.Text = $originalText
+            $script:ProjectLabels += [pscustomobject]@{Index=$script:ProjectLabels.Count; Track=$baselineIndex; Start=1.0; End=1.0; Text=($latest.Text.Substring(0, $latest.Text.Length - 64) + ('A' * 64))}
+            $rejected = ''
+            try { Get-ProjectSessionData $script:ProjectTracks } catch { $rejected = $_.Exception.Message }
+            Assert-Test ($rejected -like '*Duplicate checkpoint journal commits*') 'Conflicting commits for one generation were guessed.'
+            $script:ProjectLabels = $savedLabels
             $script:DialogueRows[0].'RESPONSE TEXT' = 'Updated dialogue'
             Save-ProjectBookkeeping
             $snapshot = Get-ProjectSessionData $script:ProjectTracks
@@ -1296,12 +1337,31 @@ try {
     }
 
     if ($SourceFile -eq 'ZeeVA_TextOnly.ps1') {
+        Invoke-TestCase 'Metadata selection warnings are yellow but still abort incomplete saves' {
+            $script:State.Connected = $true
+            $script:State.SessionDirty = $true
+            $script:State.ProjectPath = Join-Path $testRoot 'warning.aup3'
+            function Update-Display {}
+            function Send-Audacity { throw 'An incomplete checkpoint must not reach the project save.' }
+            function Save-ProjectBookkeeping { Assert-SelectedLabelTrack 0 }
+            Invoke-Action -Id 11
+            Assert-Test ($script:FeedbackLabel.BackColor -eq [Drawing.Color]::LightGoldenrodYellow -and
+                $script:FeedbackLabel.ForeColor -eq [Drawing.Color]::Black -and
+                $script:FeedbackLabel.Text -like 'Warning: *checkpoint was not completed*' -and
+                $script:State.SessionDirty -and -not $script:State.Busy) 'Safety stop was not a yellow warning or falsely completed the save.'
+            function Save-ProjectBookkeeping { throw 'Disk write failed.' }
+            Invoke-Action -Id 11
+            Assert-Test ($script:FeedbackLabel.ForeColor -eq [Drawing.Color]::Firebrick -and
+                $script:FeedbackLabel.BackColor -eq [Drawing.SystemColors]::Control -and
+                $script:FeedbackLabel.Text -ceq 'Disk write failed.') 'A genuine failure inherited warning styling.'
+        }
+
         Invoke-TestCase 'Checkpoint writers refuse mixed audio and metadata selections' {
             $baseline = (Get-SessionTrackName).Substring($script:SessionTrackPrefix.Length)
             $script:State.Candidate = 'TAKE|line|one'
             $script:GuardTracks = @(
                 [pscustomobject]@{name='TAKE|line|one'; kind='wave'; selected=$true},
-                [pscustomobject]@{name='Session'; kind='label'; selected=$false}
+                [pscustomobject]@{name=($script:SessionTrackPrefix + $baseline); kind='label'; selected=$true}
             )
             $script:Commands = [Collections.Generic.List[string]]::new()
             function Invoke-Audacity { ConvertTo-Json -InputObject $script:GuardTracks -Compress }
@@ -1318,7 +1378,7 @@ try {
             Assert-Test ($failure -like 'Metadata operation stopped*' -and
                 @($script:Commands | Where-Object { $_ -like 'SetTrackStatus: Name=*' -or $_ -eq 'RemoveTracks:' -or $_ -eq 'AddLabel:' }).Count -eq 0 -and
                 $script:GuardTracks[0].name -ceq 'TAKE|line|one') 'A checkpoint renamed, removed or relabeled an audio track.'
-            $script:GuardTracks[2].selected = $false
+            $script:GuardTracks[1].selected = $false
             $failure = ''
             try { Assert-SelectedLabelTrack 0 } catch { $failure = $_.Exception.Message }
             Assert-Test ($failure -like 'Metadata operation stopped*') 'An audio track passed the metadata target check.'
@@ -1669,6 +1729,73 @@ try {
     }
 
     if ($SourceFile -eq 'ZeeVA_TextOnly.ps1') {
+        Invoke-TestCase 'Take view restoration targets the current take rather than trailing labels' {
+            $script:State.TextSourceOnly = $true
+            $script:State.Originals = @{}
+            $script:State.Accepted['line.wav'] = 'TAKE|line|one'
+            $script:State.Candidate = 'TAKE|line|pending'
+            $script:MockTracks = @(
+                [pscustomobject]@{Index=0; Name='TAKE|line|one'; Start=2.0; End=3.0; Channels=2},
+                [pscustomobject]@{Index=1; Name='TAKE|line|pending'; Start=4.0; End=5.0; Channels=2}
+            )
+            $script:ViewTrackCount = 3
+            $script:Commands = [Collections.Generic.List[string]]::new()
+            function Send-Audacity {
+                param($Command)
+                $script:Commands.Add($Command)
+                if ($Command -eq 'SelectNone:') { $script:SelectedTrack = -1 }
+                elseif ($Command -match '^Select(?:Tracks)?: Track=([0-9]+)') {
+                    $script:SelectedTrack = [int]$matches[1]
+                    if ($Command -match ' Start=([0-9.]+) End=([0-9.]+)') {
+                        $script:SelectedStart = [double]$matches[1]
+                        $script:SelectedEnd = [double]$matches[2]
+                    }
+                }
+                elseif ($Command -eq 'SetTrackStatus: Focused=1') { $script:FocusedTrack = $script:SelectedTrack }
+                elseif ($Command -eq 'FirstTrack:') {
+                    $script:FocusedTrack = 0
+                    $script:VisibleTrack = 0
+                }
+                elseif ($Command -eq 'NextTrack:') {
+                    if ($script:FocusedTrack -eq $script:ViewTrackCount - 1) {
+                        if ($script:CircularNavigation) { $script:FocusedTrack = 0 }
+                    }
+                    else { $script:FocusedTrack++ }
+                    $script:VisibleTrack = $script:FocusedTrack
+                }
+                else { throw "Unexpected take-view command: $Command" }
+            }
+            foreach ($circular in @($false, $true)) {
+                $script:CircularNavigation = $circular
+                foreach ($initialFocus in @(0, 1, 2)) {
+                    $script:FocusedTrack = $initialFocus
+                    Restore-SessionSelection
+                    Assert-Test ($script:VisibleTrack -eq 1 -and $script:FocusedTrack -eq 1 -and
+                        $script:SelectedTrack -eq 1 -and $script:SelectedStart -eq 4.0 -and $script:SelectedEnd -eq 5.0
+                    ) 'Pending take was not brought into view, or its selection was changed.'
+                }
+                $script:ViewTrackCount = 2
+                $script:FocusedTrack = 1
+                Restore-SessionSelection
+                Assert-Test ($script:VisibleTrack -eq 1) 'Last take navigation wrapped or overshot.'
+                $script:ViewTrackCount = 3
+            }
+            $script:State.Candidate = $null
+            Restore-SessionSelection
+            Assert-Test ($script:VisibleTrack -eq 0 -and $script:SelectedTrack -eq 0 -and
+                $script:SelectedStart -eq 2.0 -and $script:SelectedEnd -eq 3.0
+            ) 'First-track accepted take was not restored.'
+            $script:State.Accepted = @{}
+            $script:Commands.Clear()
+            Restore-SessionSelection
+            Assert-Test ($script:Commands.Count -eq 1 -and $script:Commands[0] -ceq 'SelectNone:') 'Unrecorded line navigated to metadata.'
+            $script:State.Recording = $true
+            $script:Commands.Clear()
+            $rejected = ''
+            try { Restore-SessionSelection } catch { $rejected = $_.Exception.Message }
+            Assert-Test ($rejected -like 'Stop recording*' -and $script:Commands.Count -eq 0) 'View restoration disturbed recording.'
+        }
+
         Invoke-TestCase 'Prepared initial save avoids duplicate labels and clears progress on failures' {
             $script:Preparations = 0
             function Save-ProjectBookkeeping { $script:Preparations++ }

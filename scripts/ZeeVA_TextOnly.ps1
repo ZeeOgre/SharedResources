@@ -752,7 +752,12 @@ function Read-SessionTrackPayload {
         $chunkCount = [int]$matches[1]
         $expectedHash = $matches[2]
         $metadataIndex = [Array]::IndexOf($Tracks, $Metadata)
-        $labels = @(Get-AudacityLabels | Where-Object { $_.Track -eq $metadataIndex })
+        $labels = @(Get-AudacityLabels | Where-Object {
+            $_.Track -eq $metadataIndex -and
+            (-not [string]::IsNullOrEmpty($_.Text)) -and
+            (-not $_.Text.StartsWith('ZeeVA Checkpoint|')) -and
+            (-not $_.Text.StartsWith('ZeeVA Checkpoint Data|'))
+        })
         if ($labels.Count -ne $chunkCount) { throw 'Session chunks are missing or duplicated.' }
         $chunks = @{}
         foreach ($label in $labels) {
@@ -772,6 +777,50 @@ function Read-SessionTrackPayload {
             throw 'The session chunk checksum does not match.'
         }
     }
+    return $encoded
+}
+
+function Read-CheckpointJournalPayload {
+    param([object[]]$Labels, [string]$Manifest = '')
+
+    if (-not $Manifest) {
+        $commits = @($Labels | Where-Object { $_.Text.StartsWith('ZeeVA Checkpoint|') })
+        if (-not $commits.Count) { return $null }
+        foreach ($commit in $commits) {
+            if ($commit.Text -cnotmatch '^ZeeVA Checkpoint\|v3\|([1-9][0-9]*)\|([1-9][0-9]*)\|([A-F0-9]{64})$') {
+                throw 'Invalid checkpoint journal manifest.'
+            }
+        }
+        if (@($commits | ForEach-Object { [long]($_.Text.Split('|')[2]) } | Sort-Object -Unique).Count -ne $commits.Count) {
+            throw 'Duplicate checkpoint journal commits.'
+        }
+        $latest = @($commits | Sort-Object { [long]($_.Text.Split('|')[2]) } -Descending)[0]
+        $Manifest = $latest.Text
+    }
+    if ($Manifest -cnotmatch '^ZeeVA Checkpoint\|v3\|([1-9][0-9]*)\|([1-9][0-9]*)\|([A-F0-9]{64})$') {
+        throw 'Invalid checkpoint journal manifest.'
+    }
+    $generation = [long]$matches[1]
+    $chunkCount = [int]$matches[2]
+    $expectedHash = $matches[3]
+    if (@($Labels | Where-Object Text -CEQ $Manifest).Count -gt 1) {
+        throw 'Duplicate checkpoint journal commits.'
+    }
+    $prefix = 'ZeeVA Checkpoint Data|' + $generation + '|'
+    $chunks = @{}
+    foreach ($label in @($Labels | Where-Object { $_.Text.StartsWith($prefix) })) {
+        if ($label.Text -cnotmatch '^ZeeVA Checkpoint Data\|[1-9][0-9]*\|([0-9]+)\|([A-Za-z0-9+/=]+)$') {
+            throw 'Invalid checkpoint journal chunk.'
+        }
+        $index = [int]$matches[1]
+        if ($index -ge $chunkCount -or $chunks.ContainsKey($index)) {
+            throw 'Invalid or duplicate checkpoint journal chunk index.'
+        }
+        $chunks[$index] = $matches[2]
+    }
+    if ($chunks.Count -ne $chunkCount) { throw 'Checkpoint journal chunks are missing.' }
+    $encoded = -join @(for ($i = 0; $i -lt $chunkCount; $i++) { $chunks[$i] })
+    if ((Get-SessionPayloadHash $encoded) -cne $expectedHash) { throw 'Checkpoint journal checksum does not match.' }
     return $encoded
 }
 
@@ -813,10 +862,17 @@ function Get-ProjectSessionData {
             -not $snapshot.CurrentFile -or -not $snapshot.Originals) {
             throw 'Missing or unsupported session fields.'
         }
-        $checkpoints = @($Tracks | Where-Object { ([string]$_.name).StartsWith('ZeeVA Progress|') })
-        if ($checkpoints.Count -gt 1) { throw 'The project contains multiple ZeeVA progress tracks.' }
-        if ($checkpoints.Count -eq 1) {
-            $payload = Read-SessionTrackPayload -Tracks $Tracks -Metadata $checkpoints[0] -Prefix 'ZeeVA Progress|'
+        $metadataIndex = [Array]::IndexOf($Tracks, $metadata[0])
+        $journal = Read-CheckpointJournalPayload -Labels @(Get-AudacityLabels | Where-Object Track -eq $metadataIndex)
+        if (-not $journal) {
+            $checkpoints = @($Tracks | Where-Object { ([string]$_.name).StartsWith('ZeeVA Progress|') })
+            if ($checkpoints.Count -gt 1) { throw 'The project contains multiple ZeeVA progress tracks.' }
+            if ($checkpoints.Count -eq 1) {
+                $journal = Read-SessionTrackPayload -Tracks $Tracks -Metadata $checkpoints[0] -Prefix 'ZeeVA Progress|'
+            }
+        }
+        if ($journal) {
+            $payload = $journal
             $checkpoint = ConvertFrom-SessionPayload $payload
             if ($checkpoint.Version -ne 1 -or $checkpoint.CheckpointHash -cne (Get-SessionPayloadHash $encoded)) {
                 throw 'The progress checkpoint does not match this session.'
@@ -864,63 +920,64 @@ function Set-ProjectProgress {
 function Save-SessionCheckpoint {
     param([object[]]$Tracks, [string]$Baseline)
 
-    $prefix = 'ZeeVA Progress|'
-    $checkpoints = @($Tracks | Where-Object { ([string]$_.name).StartsWith($prefix) })
-    if ($checkpoints.Count -gt 1) { throw 'The project contains multiple ZeeVA progress tracks.' }
     $encoded = (Get-SessionTrackName -CheckpointHash (Get-SessionPayloadHash $Baseline)).Substring($script:SessionTrackPrefix.Length)
+    $saved = Get-ProjectSessionData $Tracks
+    $current = ConvertFrom-SessionPayload $encoded
+    $unchanged = $true
+    foreach ($property in @('OutputRoot', 'CurrentFile', 'Accepted', 'Exported', 'Candidate', 'Candidates')) {
+        if ((ConvertTo-Json -InputObject $saved.$property -Depth 5 -Compress) -cne
+            (ConvertTo-Json -InputObject $current.$property -Depth 5 -Compress)) {
+            $unchanged = $false
+            break
+        }
+    }
+    if ($unchanged) { return }
+    $metadata = @($Tracks | Where-Object { ([string]$_.name).StartsWith($script:SessionTrackPrefix) })
+    if ($metadata.Count -ne 1 -or $metadata[0].kind -cne 'label') {
+        throw 'A unique baseline label track is required for checkpoint saves.'
+    }
+    $index = [Array]::IndexOf($Tracks, $metadata[0])
+    $allLabels = @(Get-AudacityLabels)
+    $labels = @($allLabels | Where-Object Track -eq $index)
+    $generation = 1L
+    foreach ($label in $labels) {
+        if ($label.Text -cmatch '^ZeeVA Checkpoint(?: Data)?\|(?:v3\|)?([1-9][0-9]*)\|') {
+            $generation = [Math]::Max($generation, [long]$matches[1] + 1L)
+        }
+    }
     $chunks = @(
         for ($offset = 0; $offset -lt $encoded.Length; $offset += 512) {
             $encoded.Substring($offset, [Math]::Min(512, $encoded.Length - $offset))
         }
     )
-    $manifest = '{0}v2|{1}|{2}' -f $prefix, $chunks.Count, (Get-SessionPayloadHash $encoded)
-    if ($checkpoints.Count -eq 1) {
-        $existing = Read-SessionTrackPayload -Tracks $Tracks -Metadata $checkpoints[0] -Prefix $prefix
-        if ($existing -ceq $encoded) { return }
-        if ($checkpoints[0].kind -cne 'label') { throw 'The ZeeVA progress track must be a label track.' }
-    } else {
-        $saved = ConvertFrom-SessionPayload $Baseline
-        $current = ConvertFrom-SessionPayload $encoded
-        $unchanged = $true
-        foreach ($property in @('OutputRoot', 'CurrentFile', 'Accepted', 'Exported', 'Candidate', 'Candidates')) {
-            if ((ConvertTo-Json -InputObject $saved.$property -Depth 5 -Compress) -cne
-                (ConvertTo-Json -InputObject $current.$property -Depth 5 -Compress)) {
-                $unchanged = $false
-                break
-            }
-        }
-        if ($unchanged) { return }
-        if ($Tracks.Count -gt $script:AudacityMaxTrackIndex) {
-            throw 'No room for a recovery checkpoint within the Audacity scripting track limit.'
-        }
+    if ($allLabels.Count + $chunks.Count + 1 -gt 10001) {
+        throw 'No room for a checkpoint within Audacity''s scripting label limit. The previous checkpoint is unchanged.'
     }
-    Send-Audacity 'SelectNone:'
-    if ($checkpoints.Count -eq 1) {
-        $index = [Array]::IndexOf($Tracks, $checkpoints[0])
-        Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f $index)
-        Assert-SelectedLabelTrack $index
-        Send-Audacity 'RemoveTracks:'
-    }
-    [object[]]$remainingTracks = (Invoke-Audacity 'GetInfo: Type=Tracks Format=JSON') | ConvertFrom-Json
-    if ($remainingTracks.Count -ne $Tracks.Count - $checkpoints.Count) {
-        throw 'The track list changed while preparing the checkpoint. No new metadata was written. Reconnect and inspect the project.'
-    }
-    $index = $remainingTracks.Count
-    Send-Audacity 'NewLabelTrack:'
+    $manifest = 'ZeeVA Checkpoint|v3|{0}|{1}|{2}' -f $generation, $chunks.Count, (Get-SessionPayloadHash $encoded)
     Set-ProjectProgress ('Saving progress - 0/{0} labels' -f $chunks.Count)
+    $script:State.SessionDirty = $true
     for ($chunkIndex = 0; $chunkIndex -lt $chunks.Count; $chunkIndex++) {
-        $time = $chunkIndex / 1000.0
+        $time = ($allLabels.Count + $chunkIndex) / 100.0
         $labelIndex = New-AudacityLabel -Track $index -Start $time -End $time
         Send-Audacity ('SetLabel: Label={0} Text={1}' -f $labelIndex,
-            (Quote-Audacity ('ZeeVA Data|{0}|{1}' -f $chunkIndex, $chunks[$chunkIndex])))
+            (Quote-Audacity ('ZeeVA Checkpoint Data|{0}|{1}|{2}' -f $generation, $chunkIndex, $chunks[$chunkIndex])))
         Set-ProjectProgress ('Saving progress - {0}/{1} labels' -f ($chunkIndex + 1), $chunks.Count)
     }
-    Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f $index)
-    Assert-SelectedLabelTrack $index
-    Send-Audacity ('SetTrackStatus: Name=' + (Quote-Audacity $manifest))
+    $written = @(Get-AudacityLabels | Where-Object Track -eq $index)
+    if ((Read-CheckpointJournalPayload -Labels $written -Manifest $manifest) -cne $encoded) {
+        throw 'Checkpoint verification failed. The previous checkpoint is unchanged.'
+    }
+    # Commit only after every new chunk is verified; interrupted writes leave the old checkpoint readable.
+    $time = ($allLabels.Count + $chunks.Count) / 100.0
+    $labelIndex = New-AudacityLabel -Track $index -Start $time -End $time
+    Send-Audacity ('SetLabel: Label={0} Text={1}' -f $labelIndex, (Quote-Audacity $manifest))
+    if ((Read-CheckpointJournalPayload -Labels @(Get-AudacityLabels | Where-Object Track -eq $index)) -cne $encoded) {
+        throw 'Checkpoint commit verification failed. Inspect the project before continuing.'
+    }
 }
 
 function Assert-SelectedLabelTrack {
+    [CmdletBinding()]
     param([int]$Index)
 
     [object[]]$tracks = (Invoke-Audacity 'GetInfo: Type=Tracks Format=JSON') | ConvertFrom-Json
@@ -931,11 +988,17 @@ function Assert-SelectedLabelTrack {
     )
     if ($Index -lt 0 -or $Index -ge $tracks.Count -or $tracks[$Index].kind -cne 'label' -or
         $selected.Count -ne 1 -or $selected[0] -ne $Index) {
-        throw 'Metadata operation stopped: exactly one intended label track must be selected. No audio track was renamed or removed. Reconnect and inspect the project.'
+        $exception = [InvalidOperationException]::new(
+            'Metadata operation stopped: exactly one intended label track must be selected. The checkpoint was not completed. No audio track was renamed or removed. Leave Audacity untouched and retry Save Project; reconnect and inspect the project if this repeats.'
+        )
+        $PSCmdlet.ThrowTerminatingError([Management.Automation.ErrorRecord]::new(
+            $exception, 'ZeeVAMetadataSelection', [Management.Automation.ErrorCategory]::InvalidOperation, $Index
+        ))
     }
 }
 
 function Restore-SessionSelection {
+    if ($script:State.Recording) { throw 'Stop recording before restoring the take view.' }
     Send-Audacity 'SelectNone:'
     $file = Get-CurrentFile
     $name = $script:State.Candidate
@@ -943,7 +1006,19 @@ function Restore-SessionSelection {
     if (-not $name) { $name = $script:State.Originals[$file.Name] }
     if (-not $name -and $script:State.TextSourceOnly) { return }
     $track = Find-AudioTrack $name
+    # Setting track focus alone does not scroll. Navigate from the preceding track without wrapping.
+    if ($track.Index -gt 0) {
+        Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f ($track.Index - 1))
+        Send-Audacity 'SetTrackStatus: Focused=1'
+    }
     Select-AudioTrack $track.Index $track.Start $track.End
+    if ($track.Index -eq 0) {
+        Send-Audacity 'SetTrackStatus: Focused=1'
+        Send-Audacity 'FirstTrack:'
+    }
+    else {
+        Send-Audacity 'NextTrack:'
+    }
 }
 
 function New-AudacityLabel {
@@ -3217,10 +3292,16 @@ function Update-Display {
 }
 
 function Set-StatusMessage {
-    param([string]$Message, [switch]$IsError)
+    param([string]$Message, [switch]$IsError, [switch]$IsWarning)
 
+    if ($IsWarning) { $Message = 'Warning: ' + $Message }
     $script:FeedbackLabel.Text = $Message -replace '[\r\n]+', ' '
-    $script:FeedbackLabel.ForeColor = if ($IsError) {
+    $script:FeedbackLabel.BackColor = if ($IsWarning) {
+        [Drawing.Color]::LightGoldenrodYellow
+    } else { [Drawing.SystemColors]::Control }
+    $script:FeedbackLabel.ForeColor = if ($IsWarning) {
+        [Drawing.Color]::Black
+    } elseif ($IsError) {
         [Drawing.Color]::Firebrick
     } else {
         [Drawing.Color]::DarkGreen
@@ -3337,7 +3418,8 @@ function Invoke-Action {
         $actionCompleted = $true
     }
     catch {
-        Set-StatusMessage $_.Exception.Message -IsError
+        Set-StatusMessage $_.Exception.Message -IsError `
+            -IsWarning:($_.FullyQualifiedErrorId -like 'ZeeVAMetadataSelection*')
     }
     finally {
         $script:State.Busy = $false
@@ -3649,7 +3731,8 @@ $script:Form.Add_FormClosing({
         }
         catch {
             $eventArgs.Cancel = $true
-            Set-StatusMessage $_.Exception.Message -IsError
+            Set-StatusMessage $_.Exception.Message -IsError `
+                -IsWarning:($_.FullyQualifiedErrorId -like 'ZeeVAMetadataSelection*')
         }
     }
 })
