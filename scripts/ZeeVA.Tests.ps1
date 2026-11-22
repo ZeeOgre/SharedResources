@@ -214,6 +214,13 @@ try {
             function Update-Display {}
             function Show-ScriptWindow {}
             function Save-SessionSettings {}
+            function Get-AudacityProjectWindow { [IntPtr]101 }
+            function Close-AudacityProjectWindow {
+                param([IntPtr]$Handle)
+                Assert-Test ($Handle -eq [IntPtr]101 -and -not $script:State.SessionVerified -and
+                    $script:MockTracks.Count -eq 0) 'Saved window closed before the empty project was ready.'
+                $script:Operations.Add('Close saved window')
+            }
             function Save-ProjectBookkeeping {
                 Assert-Test ($script:State.Accepted.Count -eq 0 -and $script:State.Exported.Count -eq 0 -and
                     $script:State.Recorded.Count -eq 0 -and $script:State.Candidates.Count -eq 0 -and
@@ -236,7 +243,7 @@ try {
             function Send-Audacity {
                 param($Command)
                 $script:Operations.Add($Command)
-                if ($Command -ceq 'Close:') { $script:MockTracks = @() }
+                if ($Command -ceq 'New:') { $script:MockTracks = @() }
                 elseif ($Command -like 'OpenProject2:*') {
                     Assert-Test ($script:State.Files.Count -eq 0 -and $script:State.Accepted.Count -eq 0) 'Resume retained the previous session.'
                 }
@@ -265,7 +272,7 @@ try {
                 $outputRoot = $script:State.OutputRoot
                 if ($mode -eq 'Resume') { [IO.File]::WriteAllText($nextPath, 'saved project fixture') }
                 Open-TextDialogue -Path $path
-                Assert-Test (($script:Operations[0..2] -join ',') -ceq 'Save current,Stop:,Close:') 'Switch did not save before closing.'
+                Assert-Test (($script:Operations[0..3] -join ',') -ceq 'Save current,Stop:,New:,Close saved window') 'Switch did not save and create an empty project before closing the saved window.'
                 Assert-Test ($script:State.ProjectPath -ceq $nextPath -and $script:State.SessionVerified -and
                     $script:State.OutputRoot -ceq $outputRoot -and $script:State.Connected) 'Switch lost project verification or configuration.'
                 if ($mode -eq 'Fresh') {
@@ -273,9 +280,43 @@ try {
                         $script:State.Index -eq 0 -and $script:Operations[-1] -ceq 'Save next') 'Wrong recording block initialized.'
                 }
                 else {
-                    Assert-Test ($script:Operations[3] -ceq ('OpenProject2: Filename=' + (Quote-Audacity $nextPath)) -and
+                    Assert-Test ($script:Operations[4] -ceq ('OpenProject2: Filename=' + (Quote-Audacity $nextPath)) -and
                         $script:Operations[-1] -ceq 'Restore next' -and $script:State.Accepted.ContainsKey('00000042.wav')) 'Existing next block was not resumed.'
                 }
+            }
+        }
+
+        Invoke-TestCase 'Native project close targets only the verified process window and keeps the new window alive' {
+            $process = [Diagnostics.Process]::GetCurrentProcess()
+            function Get-RetainedAudacityProcess { $process }
+            $first = [ZeeVA.ScriptForm]::new()
+            $second = [ZeeVA.ScriptForm]::new()
+            try {
+                foreach ($window in @($first, $second)) {
+                    $window.StartPosition = 'Manual'
+                    $window.Location = [Drawing.Point]::new(-32000, -32000)
+                }
+                $first.Show()
+                $handle = $first.Handle
+                Assert-Test ((Get-AudacityProjectWindow) -eq $handle) 'Single project window was not identified.'
+                $second.Show()
+                $rejected = ''
+                try { Get-AudacityProjectWindow } catch { $rejected = $_.Exception.Message }
+                Assert-Test ($rejected -like '*exactly one visible*') 'Multiple project windows were not rejected.'
+                $rejected = ''
+                try { [ZeeVA.ProjectWindows]::RequestClose($handle, ($process.Id + 1)) }
+                catch { $rejected = $_.Exception.Message }
+                Assert-Test ($rejected -like '*could not be verified*' -and
+                    [ZeeVA.ProjectWindows]::IsWindow($handle)) 'A different process could request a window close.'
+                Close-AudacityProjectWindow -Handle $handle
+                Assert-Test (-not [ZeeVA.ProjectWindows]::IsWindow($handle) -and
+                    [ZeeVA.ProjectWindows]::IsWindow($second.Handle) -and
+                    (Get-AudacityProjectWindow) -eq $second.Handle) 'Native close removed the wrong window or failed to complete.'
+            }
+            finally {
+                $first.Dispose()
+                $second.Dispose()
+                $process.Dispose()
             }
         }
 
@@ -327,6 +368,15 @@ try {
             $script:State.ProjectPath = Join-Path $testRoot 'retained.aup3'
             $script:State.Accepted = @{'line.wav'='TAKE|line|one'}
             $files = $script:State.Files
+            function Get-AudacityProjectWindow {
+                $script:Operations.Add('Window')
+                if ($script:FailAt -eq 'Window') { throw 'Ambiguous windows' }
+                [IntPtr]101
+            }
+            function Close-AudacityProjectWindow {
+                $script:Operations.Add('Native close')
+                if ($script:FailAt -eq 'Close') { throw 'Close failed' }
+            }
             function Save-ZeeVAProject {
                 $script:Operations.Add('Save')
                 if ($script:FailAt -eq 'Save') { throw 'Save failed' }
@@ -334,23 +384,33 @@ try {
             function Send-Audacity {
                 param($Command)
                 $script:Operations.Add($Command)
-                if ($script:FailAt -eq 'Close') { throw 'Close failed' }
+                if ($script:FailAt -eq 'New' -and $Command -ceq 'New:') { throw 'New failed' }
             }
             function Invoke-Audacity {
+                $script:Queries++
                 if ($script:FailAt -eq 'Query') { throw 'Query failed' }
-                return '[{"name":"Still open"}]'
+                if ($script:FailAt -eq 'Nonempty' -or
+                    ($script:FailAt -eq 'PostCloseNonempty' -and $script:Queries -eq 2)) {
+                    return '[{"name":"Still open"}]'
+                }
+                return '[]'
             }
-            foreach ($script:FailAt in @('Save', 'Close', 'Query', 'Nonempty')) {
+            foreach ($script:FailAt in @('Window', 'Save', 'New', 'Close', 'Query', 'Nonempty', 'PostCloseNonempty')) {
                 $script:State.SessionVerified = $true
                 $script:Operations = [Collections.Generic.List[string]]::new()
+                $script:Queries = 0
                 $failed = $false
                 try { Close-TextProject } catch { $failed = $true }
                 Assert-Test ($failed -and [object]::ReferenceEquals($files, $script:State.Files) -and
                     $script:State.Accepted.ContainsKey('line.wav')) 'Failure cleared recoverable session state.'
-                if ($script:FailAt -eq 'Save') {
-                    Assert-Test ($script:Operations.Count -eq 1 -and $script:State.SessionVerified) 'Save failure still closed the project.'
+                if ($script:FailAt -in @('Window', 'Save')) {
+                    Assert-Test (@($script:Operations | Where-Object { $_ -eq 'New:' -or $_ -eq 'Native close' }).Count -eq 0 -and
+                        $script:State.SessionVerified) 'Window validation or save failure still closed the project.'
                 }
                 else { Assert-Test (-not $script:State.SessionVerified) 'An uncertain project transition left recording enabled.' }
+                if ($script:FailAt -in @('New', 'Query', 'Nonempty')) {
+                    Assert-Test (-not $script:Operations.Contains('Native close')) 'Unverified new project still closed the saved window.'
+                }
             }
         }
 

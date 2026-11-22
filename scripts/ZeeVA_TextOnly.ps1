@@ -53,6 +53,51 @@ namespace ZeeVA {
             base.OnFormClosed(e);
         }
     }
+
+    public static class ProjectWindows {
+        delegate bool WindowCallback(IntPtr h, IntPtr parameter);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool EnumWindows(WindowCallback callback, IntPtr parameter);
+        [DllImport("user32.dll")]
+        public static extern bool IsWindow(IntPtr h);
+        [DllImport("user32.dll")]
+        static extern bool IsWindowVisible(IntPtr h);
+        [DllImport("user32.dll")]
+        static extern IntPtr GetWindow(IntPtr h, uint command);
+        [DllImport("user32.dll")]
+        static extern uint GetWindowThreadProcessId(IntPtr h, out uint processId);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool PostMessage(IntPtr h, uint message, IntPtr wParam, IntPtr lParam);
+
+        public static IntPtr GetSingleWindow(int processId) {
+            var windows = new List<IntPtr>();
+            if (!EnumWindows((h, parameter) => {
+                uint ownerProcess;
+                GetWindowThreadProcessId(h, out ownerProcess);
+                if (ownerProcess == (uint)processId && IsWindowVisible(h) &&
+                    GetWindow(h, 4) == IntPtr.Zero)
+                    windows.Add(h);
+                return true;
+            }, IntPtr.Zero))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            if (windows.Count != 1)
+                throw new InvalidOperationException(
+                    "Switching scripts requires exactly one visible Audacity project window; found " +
+                    windows.Count + ". Close extra project windows or dialogs, then retry.");
+            return windows[0];
+        }
+
+        public static void RequestClose(IntPtr h, int processId) {
+            uint ownerProcess;
+            if (!IsWindow(h) || GetWindowThreadProcessId(h, out ownerProcess) == 0 ||
+                ownerProcess != (uint)processId)
+                throw new InvalidOperationException(
+                    "The saved Audacity window could not be verified. No window was closed.");
+            // Post WM_CLOSE after the scripting exchange, never from a command using the old project.
+            if (!PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
+    }
 }
 '@
 }
@@ -318,11 +363,17 @@ function Close-TextProject {
         -not $script:State.SessionVerified) {
         throw 'Stop recording and reconnect to the current project before switching scripts.'
     }
+    $window = Get-AudacityProjectWindow
     Save-ZeeVAProject
     $script:State.SessionVerified = $false
     Send-Audacity 'Stop:'
-    # File > Close keeps Audacity running and creates an empty project on Windows.
-    Send-Audacity 'Close:'
+    # Keep a new project alive and close the saved window outside the scripting command context.
+    Send-Audacity 'New:'
+    [object[]]$tracks = (Invoke-Audacity 'GetInfo: Type=Tracks Format=JSON') | ConvertFrom-Json
+    if ($tracks.Count) {
+        throw 'Audacity did not activate a new empty project. The saved block was not closed. Close extra project windows and Reconnect before retrying.'
+    }
+    Close-AudacityProjectWindow -Handle $window
     [object[]]$tracks = (Invoke-Audacity 'GetInfo: Type=Tracks Format=JSON') | ConvertFrom-Json
     if ($tracks.Count) {
         throw 'Audacity did not switch to an empty project. Open the saved block and Reconnect, or close other project windows and Scan Project before continuing.'
@@ -346,6 +397,31 @@ function Close-TextProject {
     $script:DialogueIndexedRows = $null
     $script:DialogueIndex = @{}
     $script:State.SessionVerified = $true
+}
+
+function Get-AudacityProjectWindow {
+    $process = Get-RetainedAudacityProcess
+    if (-not $process) { throw 'Audacity is no longer running. Reconnect before switching scripts.' }
+    [ZeeVA.ProjectWindows]::GetSingleWindow($process.Id)
+}
+
+function Close-AudacityProjectWindow {
+    param([IntPtr]$Handle)
+
+    $process = Get-RetainedAudacityProcess
+    if (-not $process) { throw 'Audacity exited before the saved project window could be closed. Reconnect.' }
+    [ZeeVA.ProjectWindows]::RequestClose($Handle, $process.Id)
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    while ([ZeeVA.ProjectWindows]::IsWindow($Handle)) {
+        if ($stopwatch.ElapsedMilliseconds -ge 15000) {
+            throw 'The saved Audacity window did not close. Resolve any save dialog or cancel the close, then Reconnect. The next block was not loaded.'
+        }
+        if (-not (Get-RetainedAudacityProcess)) {
+            throw 'Audacity exited while closing the saved project window. The next block was not loaded. Reconnect.'
+        }
+        [Windows.Forms.Application]::DoEvents()
+        [Threading.Thread]::Sleep(20)
+    }
 }
 
 function Select-TextLineTrack {

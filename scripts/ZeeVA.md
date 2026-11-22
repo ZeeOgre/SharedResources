@@ -55,6 +55,12 @@ imports original WAVs. The existing WAV-based script retains its normal behavior
 - Open Script, or drop one `.txt` / `.tsv` file onto the main window, Open Script
   button/path label, or script window. The import is the same UTF-8, tab-separated
   format, with `FILENAME`, `RESPONSE TEXT` and `VOICE TYPE` columns.
+  Switching blocks requires one visible Audacity project window. ZeeVA saves it,
+  creates an empty project window, then requests a normal Windows close of the
+  saved window outside the scripting pipe. It confirms that window has closed
+  and the active project is empty before loading the next block. A failed or
+  cancelled close leaves the previous session mappings intact and requires
+  reconnecting; ZeeVA never terminates the Audacity process.
   Both launchers prefer a sibling `<basename>_filtered.txt` (or `_filtered.tsv`)
   over the selected or startup export. If it is absent, the standard export is
   used; if neither exists, a file picker opens. Cancelling does not start a session.
