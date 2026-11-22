@@ -668,9 +668,15 @@ function Get-SessionTrackName {
         })
     }
     $json = $snapshot | ConvertTo-Json -Depth 5 -Compress
-    $script:SessionTrackPrefix + [Convert]::ToBase64String(
-        [Text.Encoding]::UTF8.GetBytes($json)
-    )
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    $buffer = [IO.MemoryStream]::new()
+    try {
+        $gzip = [IO.Compression.GZipStream]::new($buffer, [IO.Compression.CompressionLevel]::Optimal, $true)
+        try { $gzip.Write($bytes, 0, $bytes.Length) }
+        finally { $gzip.Dispose() }
+        $script:SessionTrackPrefix + [Convert]::ToBase64String($buffer.ToArray())
+    }
+    finally { $buffer.Dispose() }
 }
 
 function Get-ProjectSessionData {
@@ -710,9 +716,23 @@ function Get-ProjectSessionData {
                 throw 'The session chunk checksum does not match.'
             }
         }
-        $snapshot = [Text.Encoding]::UTF8.GetString(
-            [Convert]::FromBase64String($encoded)
-        ) | ConvertFrom-Json -ErrorAction Stop
+        $bytes = [Convert]::FromBase64String($encoded)
+        # Older projects store plain UTF-8 JSON; new payloads have a gzip header.
+        if ($bytes.Length -ge 2 -and $bytes[0] -eq 0x1F -and $bytes[1] -eq 0x8B) {
+            $inputBuffer = [IO.MemoryStream]::new($bytes, $false)
+            $outputBuffer = [IO.MemoryStream]::new()
+            try {
+                $gzip = [IO.Compression.GZipStream]::new($inputBuffer, [IO.Compression.CompressionMode]::Decompress, $true)
+                try { $gzip.CopyTo($outputBuffer) }
+                finally { $gzip.Dispose() }
+                $bytes = $outputBuffer.ToArray()
+            }
+            finally {
+                $inputBuffer.Dispose()
+                $outputBuffer.Dispose()
+            }
+        }
+        $snapshot = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json -ErrorAction Stop
         if ($snapshot.Version -ne 1 -or -not $snapshot.Source -or
             -not $snapshot.OutputRoot -or @($snapshot.Files).Count -eq 0 -or
             -not $snapshot.CurrentFile -or -not $snapshot.Originals) {

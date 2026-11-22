@@ -84,6 +84,9 @@ imports original WAVs. The existing WAV-based script retains its normal behavior
   Status shows `Preparing project - 1/23 labels` as the session-data labels are
   written (these counts are metadata chunks, not dialogue lines), followed by
   `Saving Audacity project...`. Initial setup writes those labels only once.
+  Stop and Accept also checkpoint recovery data. Session payloads are gzip-compressed
+  before splitting into labels, reducing the scripting commands for each save
+  without discarding dialogue columns or recovery state.
   More than 40 selected lines use recording
   blocks and `<script basename>_<voice type>_Block<N>.aup3` projects, preserving
   room for retakes within Audacity's scripting track limit.
@@ -135,8 +138,9 @@ imports original WAVs. The existing WAV-based script retains its normal behavior
   and export receipts inside the `.aup3`, using numbered labels on a dedicated
   non-audio track with a short name beginning `ZeeVA Session|v2|`. A checksum
   verifies the complete snapshot. Do not edit or delete this track or its labels.
-  Older snapshots embedded in a long track name can still be read; the next save
-  replaces them with bounded chunks. Commands of 1 KB or more are refused before
+  Older uncompressed snapshots, including those embedded in a long track name,
+  can still be read; the next save replaces them with compressed bounded chunks.
+  Use the updated launchers to reopen compressed projects. Commands of 1 KB or more are refused before
   transmission because oversized commands can crash Audacity's scripting module.
 - A project already open in Audacity restores automatically when ZeeVA connects,
   if it contains this bookkeeping. Reconnect reconciles it with actual tracks,

@@ -821,6 +821,48 @@ try {
         Assert-Test $rejected 'Corrupt bookkeeping was accepted.'
     }
 
+    Invoke-TestCase 'Compressed recovery payloads preserve dialogue and read older snapshots' {
+        $script:State.TextSourceOnly = $true
+        $script:State.VoiceType = 'TestVT'
+        $script:State.DialogueExportPath = Join-Path $testRoot 'compression.tsv'
+        $text = 'Quoted "response"' + [char]0xE9 + "`nSecond line"
+        $script:DialogueRows = @(
+            [pscustomobject]@{
+                FILENAME='line'; 'VOICE TYPE'='TestVT'; 'RESPONSE TEXT'=$text
+                'SCRIPT NOTES'=('Delivery notes. ' * 2000)
+                'DIALOGUE BEFORE'='Before'; 'DIALOGUE AFTER'='After'
+            }
+        )
+        $name = Get-SessionTrackName
+        $snapshot = Get-ProjectSessionData @([pscustomobject]@{name=$name})
+        Assert-Test ($snapshot.DialogueRows[0].'RESPONSE TEXT' -ceq $text -and
+            $snapshot.DialogueRows[0].'SCRIPT NOTES' -ceq $script:DialogueRows[0].'SCRIPT NOTES' -and
+            $snapshot.DialogueRows[0].'DIALOGUE AFTER' -ceq 'After') 'Compression discarded dialogue text, Unicode or metadata.'
+        $json = $snapshot | ConvertTo-Json -Depth 5 -Compress
+        $legacyPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+        $compressedPayload = $name.Substring($script:SessionTrackPrefix.Length)
+        Assert-Test ($compressedPayload.Length -lt $legacyPayload.Length / 4) 'Repetitive dialogue metadata was not reduced by at least 75 percent.'
+        $legacy = Get-ProjectSessionData @([pscustomobject]@{name=($script:SessionTrackPrefix + $legacyPayload)})
+        Assert-Test ($legacy.DialogueRows[0].'RESPONSE TEXT' -ceq $text -and $legacy.CurrentFile -ceq 'line.wav') 'Older uncompressed track-name snapshots stopped loading.'
+        $script:LegacyLabels = @(
+            for ($offset = 0; $offset -lt $legacyPayload.Length; $offset += 512) {
+                [pscustomobject]@{Track=0; Text=('ZeeVA Data|{0}|{1}' -f ($offset / 512),
+                    $legacyPayload.Substring($offset, [Math]::Min(512, $legacyPayload.Length - $offset)))}
+            }
+        )
+        function Get-AudacityLabels { $script:LegacyLabels }
+        $manifest = '{0}v2|{1}|{2}' -f $script:SessionTrackPrefix, $script:LegacyLabels.Count, (Get-SessionPayloadHash $legacyPayload)
+        $legacy = Get-ProjectSessionData @([pscustomobject]@{name=$manifest})
+        Assert-Test ($legacy.DialogueRows[0].'SCRIPT NOTES' -ceq $script:DialogueRows[0].'SCRIPT NOTES') 'Older uncompressed chunked snapshots stopped loading.'
+        $corrupt = [Convert]::FromBase64String($compressedPayload)
+        $corrupt[2] = 0xFF
+        $rejected = ''
+        try {
+            Get-ProjectSessionData @([pscustomobject]@{name=($script:SessionTrackPrefix + [Convert]::ToBase64String($corrupt))})
+        } catch { $rejected = $_.Exception.Message }
+        Assert-Test ($rejected -like 'Cannot read ZeeVA project bookkeeping:*') 'Invalid compressed recovery data did not fail explicitly.'
+    }
+
     Invoke-TestCase 'Large sessions use bounded metadata chunks and replace only bookkeeping' {
         foreach ($number in 1..300) {
             $fileName = 'DialogueLine{0:D5}.wav' -f $number
@@ -887,7 +929,8 @@ try {
             Assert-Test ($script:FeedbackLabel.Text -ceq ('Preparing project - {0}/{0} labels' -f $total)) 'Preparation never reported its final completed label.'
             Assert-Test (-not $script:State.ProjectProgress) 'Preparation status was left active after completion.'
         }
-        Assert-Test ((Get-SessionTrackName).Length -gt 10000) 'The test session is not large enough to reproduce the original risk.'
+        $uncompressed = Get-ProjectSessionData $script:ProjectTracks | ConvertTo-Json -Depth 5 -Compress
+        Assert-Test ($uncompressed.Length -gt 10000) 'The test session is not large enough to reproduce the original risk.'
         foreach ($command in $script:Commands) {
             Assert-Test ([Text.Encoding]::UTF8.GetByteCount($command + "`r`n") -lt 1024) 'An oversized metadata command would reach Audacity.'
         }
