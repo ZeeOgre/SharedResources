@@ -898,9 +898,14 @@ function Save-SessionCheckpoint {
     if ($checkpoints.Count -eq 1) {
         $index = [Array]::IndexOf($Tracks, $checkpoints[0])
         Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f $index)
+        Assert-SelectedLabelTrack $index
         Send-Audacity 'RemoveTracks:'
     }
-    $index = $Tracks.Count - $checkpoints.Count
+    [object[]]$remainingTracks = (Invoke-Audacity 'GetInfo: Type=Tracks Format=JSON') | ConvertFrom-Json
+    if ($remainingTracks.Count -ne $Tracks.Count - $checkpoints.Count) {
+        throw 'The track list changed while preparing the checkpoint. No new metadata was written. Reconnect and inspect the project.'
+    }
+    $index = $remainingTracks.Count
     Send-Audacity 'NewLabelTrack:'
     Set-ProjectProgress ('Saving progress - 0/{0} labels' -f $chunks.Count)
     for ($chunkIndex = 0; $chunkIndex -lt $chunks.Count; $chunkIndex++) {
@@ -911,7 +916,23 @@ function Save-SessionCheckpoint {
         Set-ProjectProgress ('Saving progress - {0}/{1} labels' -f ($chunkIndex + 1), $chunks.Count)
     }
     Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f $index)
+    Assert-SelectedLabelTrack $index
     Send-Audacity ('SetTrackStatus: Name=' + (Quote-Audacity $manifest))
+}
+
+function Assert-SelectedLabelTrack {
+    param([int]$Index)
+
+    [object[]]$tracks = (Invoke-Audacity 'GetInfo: Type=Tracks Format=JSON') | ConvertFrom-Json
+    $selected = @(
+        for ($i = 0; $i -lt $tracks.Count; $i++) {
+            if ($tracks[$i].selected) { $i }
+        }
+    )
+    if ($Index -lt 0 -or $Index -ge $tracks.Count -or $tracks[$Index].kind -cne 'label' -or
+        $selected.Count -ne 1 -or $selected[0] -ne $Index) {
+        throw 'Metadata operation stopped: exactly one intended label track must be selected. No audio track was renamed or removed. Reconnect and inspect the project.'
+    }
 }
 
 function Restore-SessionSelection {
@@ -929,6 +950,7 @@ function New-AudacityLabel {
     param([int]$Track, [double]$Start, [double]$End)
 
     Select-AudioTrack $Track $Start $End
+    Assert-SelectedLabelTrack $Track
     # AddLabel follows focus, not the selected track.
     Send-Audacity 'SetTrackStatus: Focused=1'
     Send-Audacity 'AddLabel:'
@@ -1005,6 +1027,7 @@ function Save-ProjectBookkeeping {
         if ($checkpoints.Count -eq 1) {
             if ($checkpoints[0].kind -cne 'label') { throw 'The ZeeVA progress track must be a label track.' }
             Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f ([Array]::IndexOf($tracks, $checkpoints[0])))
+            Assert-SelectedLabelTrack ([Array]::IndexOf($tracks, $checkpoints[0]))
             Send-Audacity 'RemoveTracks:'
             $tracks = (Invoke-Audacity 'GetInfo: Type=Tracks Format=JSON') | ConvertFrom-Json
             $metadataIndices = @(
@@ -1026,6 +1049,7 @@ function Save-ProjectBookkeeping {
                 throw 'The ZeeVA bookkeeping track must be a label track, not audio.'
             }
             Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f $metadataIndices[0])
+            Assert-SelectedLabelTrack $metadataIndices[0]
             Send-Audacity 'RemoveTracks:'
         }
         $metadataIndex = $tracks.Count - $metadataIndices.Count
@@ -1039,6 +1063,7 @@ function Save-ProjectBookkeeping {
             Set-ProjectProgress ('Preparing project - {0}/{1} labels' -f ($chunkIndex + 1), $chunks.Count)
         }
         Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f $metadataIndex)
+        Assert-SelectedLabelTrack $metadataIndex
         $manifest = '{0}v2|{1}|{2}' -f $script:SessionTrackPrefix,
             $chunks.Count, (Get-SessionPayloadHash $encoded)
         Send-Audacity ('SetTrackStatus: Name=' + (Quote-Audacity $manifest))
@@ -1064,11 +1089,57 @@ function Get-AudacityLabels {
     }
 }
 
+function Update-TrimmedAcceptanceRegions {
+    param(
+        [hashtable]$Accepted,
+        [hashtable]$Exported,
+        [object[]]$Tracks,
+        [object[]]$Labels
+    )
+
+    $updated = 0
+    foreach ($fileName in $Accepted.Keys) {
+        $baseName = [IO.Path]::GetFileNameWithoutExtension($fileName)
+        $takeName = [string]$Accepted[$fileName]
+        if (-not $takeName.StartsWith('TAKE|' + $baseName + '|')) {
+            throw 'The project contains an invalid accepted-take mapping.'
+        }
+        $takes = @($Tracks | Where-Object { $_.Name -ceq $takeName })
+        $regions = @($Labels | Where-Object { $_.Text -ceq $baseName })
+        if ($takes.Count -ne 1 -or $regions.Count -ne 1 -or
+            $takes[0].Channels -ne 2 -or $takes[0].End -le $takes[0].Start) { continue }
+        $take = $takes[0]
+        $region = $regions[0]
+        if (Test-LabelWithinTake $region $take) { continue }
+        # Only an inward trim of the already accepted take can follow its old region.
+        $oldBounds = [pscustomobject]@{Start=$region.Start; End=$region.End; Channels=2}
+        if (-not (Test-LabelWithinTake $take $oldBounds)) { continue }
+        $script:State.SessionDirty = $true
+        Send-Audacity ('SetLabel: Label={0} Start={1} End={2}' -f
+            $region.Index, (Format-Time $take.Start), (Format-Time $take.End))
+        $Exported.Remove($fileName)
+        $updated++
+        # Changing a label's start can change global label indices.
+        $Labels = @(Get-AudacityLabels)
+        $written = @($Labels | Where-Object { $_.Text -ceq $baseName })
+        if ($written.Count -ne 1 -or -not (Test-LabelWithinTake $written[0] $take)) {
+            throw "Could not update the accepted region for $fileName after trimming. Inspect the region before continuing."
+        }
+    }
+    if ($updated) { Set-StatusMessage "Updated $updated accepted region(s) to match trimmed takes." }
+    return $updated
+}
+
 function Sync-AudacitySession {
     if ($script:State.Files.Count -eq 0) { return }
     if ($script:State.TextSourceOnly) { Assert-TextProjectIdentity }
     $tracks = @(Get-AudacityTracks)
     $labels = @(Get-AudacityLabels)
+    if ($script:State.TextSourceOnly -and
+        (Update-TrimmedAcceptanceRegions -Accepted $script:State.Accepted -Exported $script:State.Exported -Tracks $tracks -Labels $labels)) {
+        $script:State.SessionDirty = $true
+        $labels = @(Get-AudacityLabels)
+    }
     foreach ($name in $script:State.Originals.Values) {
         if (@($tracks | Where-Object { $_.Name -ceq $name }).Count -ne 1) {
             throw "The project does not contain exactly one source track named '$name'. Open the correct project and reconnect."
@@ -1254,6 +1325,17 @@ function Restore-ProjectSession {
         }
     }
     $labels = @(Get-AudacityLabels)
+    foreach ($fileName in $accepted.Keys) {
+        if ($fileName -cnotin $fileNames -or -not $accepted[$fileName].StartsWith(
+            'TAKE|' + [IO.Path]::GetFileNameWithoutExtension($fileName) + '|')) {
+            throw 'The project contains an invalid accepted-take mapping.'
+        }
+    }
+    if ($script:State.TextSourceOnly -and
+        (Update-TrimmedAcceptanceRegions -Accepted $accepted -Exported $exported -Tracks $tracks -Labels $labels)) {
+        $recoveredProgress = $true
+        $labels = @(Get-AudacityLabels)
+    }
     $ambiguous = 0
     foreach ($fileName in $fileNames) {
         $baseName = [IO.Path]::GetFileNameWithoutExtension($fileName)
@@ -1290,12 +1372,6 @@ function Restore-ProjectSession {
         }
     }
     if ($currentFile -cnotin $fileNames) { throw 'The saved current WAV is not in the session.' }
-    foreach ($fileName in $accepted.Keys) {
-        if ($fileName -cnotin $fileNames -or -not $accepted[$fileName].StartsWith(
-            'TAKE|' + [IO.Path]::GetFileNameWithoutExtension($fileName) + '|')) {
-            throw 'The project contains an invalid accepted-take mapping.'
-        }
-    }
     if ($candidate -and -not $candidate.StartsWith(
         'TAKE|' + [IO.Path]::GetFileNameWithoutExtension($currentFile) + '|')) {
         throw 'The saved candidate does not belong to the current WAV.'
@@ -1339,6 +1415,13 @@ function Save-ZeeVAProject {
     param([string]$Path = '', [switch]$Overwrite, [switch]$BookkeepingPrepared)
 
     if ($script:State.Recording) { throw 'Stop recording before saving the project.' }
+    if ($script:State.TextSourceOnly -and $script:State.Accepted.Count) {
+        Assert-TextProjectIdentity
+        if (Update-TrimmedAcceptanceRegions -Accepted $script:State.Accepted -Exported $script:State.Exported `
+            -Tracks @(Get-AudacityTracks) -Labels @(Get-AudacityLabels)) {
+            $script:State.SessionDirty = $true
+        }
+    }
     Assert-AudacitySession
     if (-not $Path) { $Path = $script:State.ProjectPath }
     if (-not $Path) {
@@ -2447,6 +2530,7 @@ function Get-AcceptanceLabelTrackIndex {
     }
     Send-Audacity 'NewLabelTrack:'
     Send-Audacity ('SelectTracks: Track={0} TrackCount=1 Mode=Set' -f $tracks.Count)
+    Assert-SelectedLabelTrack $tracks.Count
     Send-Audacity ('SetTrackStatus: Name=' + (Quote-Audacity 'ZeeVA Regions'))
     return $tracks.Count
 }

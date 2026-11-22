@@ -545,7 +545,12 @@ try {
         $script:SelectedTrack = 2
         function Invoke-Audacity {
             param($Command)
-            if ($Command -like '*Type=Tracks*') { return (ConvertTo-Json -InputObject $script:RegionTracks -Depth 5 -Compress) }
+            if ($Command -like '*Type=Tracks*') {
+                for ($i = 0; $i -lt $script:RegionTracks.Count; $i++) {
+                    $script:RegionTracks[$i] | Add-Member -NotePropertyName selected -NotePropertyValue ($i -eq $script:SelectedTrack) -Force
+                }
+                return (ConvertTo-Json -InputObject $script:RegionTracks -Depth 5 -Compress)
+            }
             throw "Unexpected query: $Command"
         }
         function Get-AudacityLabels { $script:RegionLabels }
@@ -1067,7 +1072,12 @@ try {
         function Get-AudacityLabels { $script:ProjectLabels }
         function Invoke-Audacity {
             param($Command)
-            if ($Command -like '*Type=Tracks*') { return (ConvertTo-Json -InputObject $script:ProjectTracks -Depth 5 -Compress) }
+            if ($Command -like '*Type=Tracks*') {
+                for ($i = 0; $i -lt $script:ProjectTracks.Count; $i++) {
+                    $script:ProjectTracks[$i] | Add-Member -NotePropertyName selected -NotePropertyValue ($i -eq $script:SelectedTrack) -Force
+                }
+                return (ConvertTo-Json -InputObject $script:ProjectTracks -Depth 5 -Compress)
+            }
             throw "Unexpected query: $Command"
         }
         function Send-Audacity {
@@ -1283,6 +1293,122 @@ try {
         $script:MockLabelJson = '[[2,[[2,3,"line"]]],[3,[]],[4,[[4,5,"second"]]]]'
         $labels = @(Get-AudacityLabels)
         Assert-Test ($labels.Count -eq 2 -and $labels[1].Index -eq 1 -and $labels[1].Track -eq 4) 'Label indices are incorrect.'
+    }
+
+    if ($SourceFile -eq 'ZeeVA_TextOnly.ps1') {
+        Invoke-TestCase 'Checkpoint writers refuse mixed audio and metadata selections' {
+            $baseline = (Get-SessionTrackName).Substring($script:SessionTrackPrefix.Length)
+            $script:State.Candidate = 'TAKE|line|one'
+            $script:GuardTracks = @(
+                [pscustomobject]@{name='TAKE|line|one'; kind='wave'; selected=$true},
+                [pscustomobject]@{name='Session'; kind='label'; selected=$false}
+            )
+            $script:Commands = [Collections.Generic.List[string]]::new()
+            function Invoke-Audacity { ConvertTo-Json -InputObject $script:GuardTracks -Compress }
+            function Send-Audacity {
+                param($Command)
+                $script:Commands.Add($Command)
+                if ($Command -eq 'NewLabelTrack:') {
+                    $script:GuardTracks += [pscustomobject]@{name='Labels'; kind='label'; selected=$true}
+                }
+            }
+            $failure = ''
+            try { Save-SessionCheckpoint -Tracks $script:GuardTracks -Baseline $baseline }
+            catch { $failure = $_.Exception.Message }
+            Assert-Test ($failure -like 'Metadata operation stopped*' -and
+                @($script:Commands | Where-Object { $_ -like 'SetTrackStatus: Name=*' -or $_ -eq 'RemoveTracks:' -or $_ -eq 'AddLabel:' }).Count -eq 0 -and
+                $script:GuardTracks[0].name -ceq 'TAKE|line|one') 'A checkpoint renamed, removed or relabeled an audio track.'
+            $script:GuardTracks[2].selected = $false
+            $failure = ''
+            try { Assert-SelectedLabelTrack 0 } catch { $failure = $_.Exception.Message }
+            Assert-Test ($failure -like 'Metadata operation stopped*') 'An audio track passed the metadata target check.'
+        }
+
+        Invoke-TestCase 'Accepted inward trims follow their take and invalidate old exports' {
+            $script:State.TextSourceOnly = $true
+            $script:State.Files = @([IO.FileInfo]::new((Join-Path $testRoot '002CD182.wav')))
+            $script:State.Originals = @{}
+            $script:State.Accepted = @{'002CD182.wav'='TAKE|002CD182|accepted'}
+            $script:State.Exported = @{'002CD182.wav'=[pscustomobject]@{Start=90.2868; End=98.8643}}
+            $script:MockTracks = @([pscustomobject]@{Index=1; Name='TAKE|002CD182|accepted'; Start=90.837; End=98.4794; Channels=2})
+            $script:MockLabelJson = '[[2,[[90.2868,98.8643,"002CD182"]]]]'
+            $script:Commands = [Collections.Generic.List[string]]::new()
+            function Assert-TextProjectIdentity {}
+            function Send-Audacity {
+                param($Command)
+                $script:Commands.Add($Command)
+                Assert-Test ($Command -ceq 'SetLabel: Label=0 Start=90.837 End=98.4794') 'Trim adjustment selected the wrong region or bounds.'
+                $script:MockLabelJson = '[[2,[[90.837,98.4794,"002CD182"]]]]'
+            }
+            Sync-AudacitySession
+            Assert-AudacitySession
+            Assert-Test ($script:State.Accepted['002CD182.wav'] -ceq 'TAKE|002CD182|accepted' -and
+                $script:State.Exported.Count -eq 0 -and $script:State.SessionDirty -and
+                $script:Commands.Count -eq 1) 'Trimming lost acceptance, retained a stale export or rewrote extra labels.'
+            Sync-AudacitySession
+            Assert-Test ($script:Commands.Count -eq 1) 'An unchanged accepted region was rewritten.'
+        }
+
+        Invoke-TestCase 'Trim reconciliation refuses moved, ambiguous, empty and unaccepted takes' {
+            function Send-Audacity { throw 'Unsafe automatic acceptance change.' }
+            foreach ($case in @('Moved', 'Partial', 'Duplicate labels', 'Duplicate takes', 'Mono', 'Empty', 'Unaccepted', 'Subset region')) {
+                $script:State.SessionDirty = $false
+                $accepted = @{'line.wav'='TAKE|line|one'}
+                $exported = @{'line.wav'='receipt'}
+                $tracks = @([pscustomobject]@{Name='TAKE|line|one'; Start=2.0; End=3.0; Channels=2})
+                $labels = @([pscustomobject]@{Index=0; Track=2; Start=1.0; End=4.0; Text='line'})
+                switch ($case) {
+                    'Moved' { $tracks[0].Start = 5.0; $tracks[0].End = 6.0 }
+                    'Partial' { $tracks[0].Start = 3.5; $tracks[0].End = 4.5 }
+                    'Duplicate labels' { $labels += $labels[0] }
+                    'Duplicate takes' { $tracks += $tracks[0] }
+                    'Mono' { $tracks[0].Channels = 1 }
+                    'Empty' { $tracks[0].End = 2.0 }
+                    'Unaccepted' { $accepted = @{} }
+                    'Subset region' { $labels[0].Start = 2.2; $labels[0].End = 2.8 }
+                }
+                $count = Update-TrimmedAcceptanceRegions -Accepted $accepted -Exported $exported -Tracks $tracks -Labels $labels
+                Assert-Test ($count -eq 0 -and $exported.Count -eq 1 -and -not $script:State.SessionDirty) "Unsafe region was changed: $case"
+            }
+        }
+
+        Invoke-TestCase 'Multiple trim repairs refresh reordered label indices and verify writes' {
+            $accepted = @{'first.wav'='TAKE|first|one'; 'second.wav'='TAKE|second|one'}
+            $order = @($accepted.Keys)
+            $first = [IO.Path]::GetFileNameWithoutExtension($order[0])
+            $second = [IO.Path]::GetFileNameWithoutExtension($order[1])
+            $tracks = @(
+                [pscustomobject]@{Name=$accepted[$order[0]]; Start=12.0; End=14.0; Channels=2},
+                [pscustomobject]@{Name=$accepted[$order[1]]; Start=15.0; End=16.0; Channels=2}
+            )
+            $script:TrimLabels = @(
+                [pscustomobject]@{Index=0; Track=2; Start=0.0; End=20.0; Text=$first},
+                [pscustomobject]@{Index=1; Track=2; Start=10.0; End=25.0; Text=$second}
+            )
+            function Get-AudacityLabels {
+                $script:TrimLabels = @($script:TrimLabels | Sort-Object Start)
+                for ($i = 0; $i -lt $script:TrimLabels.Count; $i++) { $script:TrimLabels[$i].Index = $i }
+                $script:TrimLabels
+            }
+            function Send-Audacity {
+                param($Command)
+                Assert-Test ($Command -match '^SetLabel: Label=(\d+) Start=([\d.]+) End=([\d.]+)$') 'Unexpected trim command.'
+                $label = $script:TrimLabels[[int]$matches[1]]
+                $label.Start = [double]$matches[2]
+                $label.End = [double]$matches[3]
+            }
+            $count = Update-TrimmedAcceptanceRegions -Accepted $accepted -Exported @{} -Tracks $tracks -Labels $script:TrimLabels
+            Assert-Test ($count -eq 2 -and $script:TrimLabels[0].Text -ceq $first -and
+                $script:TrimLabels[0].Start -eq 12.0 -and $script:TrimLabels[1].Text -ceq $second -and
+                $script:TrimLabels[1].Start -eq 15.0) 'Reordered global indices changed the wrong acceptance label.'
+            $script:TrimLabels[0].Start = 0.0
+            $script:TrimLabels[0].End = 20.0
+            function Send-Audacity {}
+            $failure = ''
+            try { Update-TrimmedAcceptanceRegions -Accepted $accepted -Exported @{} -Tracks $tracks -Labels $script:TrimLabels | Out-Null }
+            catch { $failure = $_.Exception.Message }
+            Assert-Test ($failure -like 'Could not update the accepted region*') 'An ineffective label write was reported as a successful repair.'
+        }
     }
 
     Invoke-TestCase 'Recorded is not accepted and accepted is not exported' {

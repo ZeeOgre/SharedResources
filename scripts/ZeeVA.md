@@ -98,9 +98,20 @@ imports original WAVs. The existing WAV-based script retains its normal behavior
   actual global index before naming it; selection alone does not control where
   Audacity's `AddLabel` writes. An unidentified label stops the save rather than
   renaming an existing region or metadata label.
+  The standalone text-only launcher also verifies that exactly its intended
+  label track is selected before adding metadata, removing an old metadata track
+  or naming the replacement. A mixed audio/label selection stops the operation
+  rather than renaming or removing recordings. Avoid editing Audacity during a
+  checkpoint save.
   Acceptance/export checks allow only the rounding precision of Audacity's
   six-significant-digit JSON times. Export selections are clamped to the reported
   take bounds; empty, disjoint or genuinely out-of-bounds labels still fail.
+  If an already accepted take is trimmed inward afterward, the standalone
+  text-only launcher narrows its uniquely matching acceptance region on save,
+  scan/reconnect or export and reports the adjustment. The same accepted take
+  must remain entirely inside its old region; moved, partially overlapping or
+  ambiguous regions are not repaired automatically. Changed regions invalidate
+  their export receipts, so export the edited take again.
   More than 40 selected lines use recording
   blocks and `<script basename>_<voice type>_Block<N>.aup3` projects, preserving
   room for retakes within Audacity's scripting track limit.
